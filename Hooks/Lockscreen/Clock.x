@@ -1,5 +1,3 @@
-// should i split this to smaller files, ts kinda monolith too
-
 #import "Common.h"
 #import "../../Shared/LGHookSupport.h"
 #import "../../Shared/LGPrefAccessors.h"

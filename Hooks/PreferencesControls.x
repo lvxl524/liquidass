@@ -1,5 +1,3 @@
-// massive monolith, will be split in later updates ig
-
 #import "../LiquidAssPrefs/LGPrefsLiquidSlider.h"
 #import "../LiquidAssPrefs/LGPrefsLiquidSwitch.h"
 #import "../Shared/LGBackButtonSupport.h"

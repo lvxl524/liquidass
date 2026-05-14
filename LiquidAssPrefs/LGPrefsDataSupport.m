@@ -628,6 +628,16 @@ static NSArray<NSDictionary *> *LGSurfaceItemsBySortingSectionGroups(NSArray<NSD
     NSMutableArray<NSDictionary *> *currentGroup = nil;
     for (NSDictionary *item in items) {
         if ([item[@"type"] isEqualToString:@"section"]) {
+            NSString *title = item[@"title"];
+            NSString *subtitle = item[@"subtitle"];
+            if (!title.length && !subtitle.length) {
+                if (currentGroup) {
+                    [currentGroup addObject:item];
+                } else {
+                    [leadingItems addObject:item];
+                }
+                continue;
+            }
             if (currentGroup.count) {
                 [groups addObject:[currentGroup copy]];
             }
@@ -1218,7 +1228,7 @@ NSArray<NSDictionary *> *LGExperimentalItems(void) {
         LGNavSetting(LGLocalized(@"prefs.misc.live_capture.title"),
                      LGLocalized(@"prefs.misc.live_capture.subtitle"),
                      @"openLiveCaptureConfiguration"),
-        LGSpacerSetting(0.0, 0.0),
+        LGSpacerSetting(8.0, 0.0),
         LGMenuSetting(@"Dock.RenderingMode",
                       LGLocalized(@"prefs.section.dock.title"),
                       @"",
