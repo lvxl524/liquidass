@@ -87,6 +87,17 @@ static BOOL LGAppIconSubtreeContainsWidgetContent(UIView *root) {
     return found;
 }
 
+static UIView *LGAppIconNearestAncestorNamed(UIView *view, NSString *className, NSInteger maxDepth) {
+    UIView *ancestor = view.superview;
+    NSInteger depth = 0;
+    while (ancestor && depth < maxDepth) {
+        if ([NSStringFromClass(ancestor.class) isEqualToString:className]) return ancestor;
+        ancestor = ancestor.superview;
+        depth++;
+    }
+    return nil;
+}
+
 static NSString *LGAppIconClassificationFailureReason(UIView *view) {
     if (!view.window) return @"no-window";
     if (![NSStringFromClass(view.class) isEqualToString:@"SBIconImageView"]) return @"not-SBIconImageView";
@@ -95,36 +106,31 @@ static NSString *LGAppIconClassificationFailureReason(UIView *view) {
     if (LGResponderChainContainsClassNamed(view, @"SBHWidgetStackViewController")) return @"widget-stack-responder";
     if (LGHasAncestorClassNamed(view, @"SBHWidgetContainerView")) return @"widget-container-ancestor";
     if (LGHasAncestorClassNamed(view, @"BSUIScrollView")) return @"bsui-scroll-ancestor";
+    if (LGHasAncestorClassNamed(view, @"SBFloatyFolderView")) return @"floaty-folder-ancestor";
+    if (LGHasAncestorClassNamed(view, @"SBFloatyFolderScrollView")) return @"floaty-folder-scroll-ancestor";
 
-    UIView *parent = view.superview;
-    if (!parent) return @"no-parent";
-    if (![NSStringFromClass(parent.class) isEqualToString:@"SBFTouchPassThroughView"]) {
-        return [NSString stringWithFormat:@"parent=%@", NSStringFromClass(parent.class)];
-    }
-    if (LGResponderChainContainsClassNamed(parent, @"SBHWidgetStackViewController")) return @"parent-widget-stack-responder";
+    UIView *iconView = LGAppIconNearestAncestorNamed(view, @"SBIconView", 6);
+    if (!iconView) return @"no-icon-view";
+    if (LGResponderChainContainsClassNamed(iconView, @"SBHWidgetStackViewController")) return @"icon-widget-stack-responder";
+    if (LGAppIconSubtreeContainsWidgetContent(iconView)) return @"icon-widget-subtree";
 
-    UIView *grandparent = parent.superview;
-    if (!grandparent) return @"no-grandparent";
-    if (![NSStringFromClass(grandparent.class) isEqualToString:@"SBIconView"]) {
-        return [NSString stringWithFormat:@"grandparent=%@", NSStringFromClass(grandparent.class)];
-    }
-    if (LGResponderChainContainsClassNamed(grandparent, @"SBHWidgetStackViewController")) return @"grandparent-widget-stack-responder";
-    if (LGAppIconSubtreeContainsWidgetContent(grandparent)) return @"grandparent-widget-subtree";
-
-    UIView *iconListView = grandparent.superview;
+    UIView *iconListView = iconView.superview;
     if (!iconListView) return @"no-icon-list";
-    if (![NSStringFromClass(iconListView.class) isEqualToString:@"SBIconListView"]) {
+    NSString *iconListClass = NSStringFromClass(iconListView.class);
+    BOOL regularList = [iconListClass isEqualToString:@"SBIconListView"];
+    BOOL floatingDockList = [iconListClass isEqualToString:@"SBFloatingDockIconListView"];
+    if (!regularList && !floatingDockList) {
         return [NSString stringWithFormat:@"icon-list=%@", NSStringFromClass(iconListView.class)];
     }
-    BOOL hasMaterialSibling = NO;
-    for (UIView *sibling in iconListView.subviews) {
-        if (sibling == grandparent) continue;
-        if ([NSStringFromClass(sibling.class) isEqualToString:@"MTMaterialView"]) {
-            hasMaterialSibling = YES;
-            break;
-        }
+    if (regularList &&
+        !LGHasAncestorClassNamed(iconListView, @"SBRootFolderView") &&
+        !LGHasAncestorClassNamed(iconListView, @"SBFloatingDockView")) {
+        return @"regular-list-not-root-or-dock";
     }
-    return hasMaterialSibling ? nil : @"no-MTMaterialView-sibling";
+    if (floatingDockList && !LGHasAncestorClassNamed(iconListView, @"SBFloatingDockView")) {
+        return @"floating-list-not-dock";
+    }
+    return nil;
 }
 
 static BOOL LGIsHomescreenIconImageView(UIView *view) {
@@ -216,6 +222,9 @@ static UIColor *appIconTintColorForView(UIView *view) {
 static void removeAppIconOverlays(UIView *view) {
     UIView *host = LGAppIconHostView(view);
     LGRemoveAssociatedSubview(host, kAppIconTintKey);
+    if (view.superview && view.superview != host) {
+        LGRemoveAssociatedSubview(view.superview, kAppIconTintKey);
+    }
 
     LiquidGlassView *glass = objc_getAssociatedObject(host, kAppIconGlassKey);
     if (glass) [glass removeFromSuperview];
@@ -228,9 +237,9 @@ static void removeAppIconOverlays(UIView *view) {
 }
 
 static void ensureAppIconTintOverlay(UIView *view) {
-    UIView *host = LGAppIconHostView(view);
-    UIView *overlayHost = objc_getAssociatedObject(view, kAppIconOverlayHostKey);
-    CGRect frame = (host == overlayHost) ? host.bounds : LGAppIconGlassFrameInHost(view, host);
+    UIView *host = objc_getAssociatedObject(view, kAppIconOverlayHostKey);
+    if (!host) return;
+    CGRect frame = host.bounds;
     UIView *tint = LGEnsureTintOverlayView(host,
                                            kAppIconTintKey,
                                            kAppIconTintTag,
@@ -263,6 +272,7 @@ static void injectIntoAppIcon(UIView *view) {
         LGProfileEnd(@"app_icons.inject", profileStart);
         return;
     }
+    LGRemoveAssociatedSubview(parentHost, kAppIconTintKey);
     UIView *host = objc_getAssociatedObject(view, kAppIconOverlayHostKey);
     if (!host) {
         host = [[UIView alloc] initWithFrame:frameInParent];
@@ -371,15 +381,19 @@ static void injectIntoAppIcon(UIView *view) {
         removeAppIconOverlays(self_);
         return;
     }
-    ensureAppIconTintOverlay(self_);
-    UIView *host = LGAppIconHostView(self_);
+    UIView *host = objc_getAssociatedObject(self_, kAppIconOverlayHostKey);
+    if (!host) {
+        injectIntoAppIcon(self_);
+        return;
+    }
     LiquidGlassView *glass = objc_getAssociatedObject(host, kAppIconGlassKey);
     if (!glass) {
         injectIntoAppIcon(self_);
         return;
     }
-    CGRect frame = LGAppIconGlassFrameInHost(self_, host);
+    CGRect frame = host.bounds;
     if (CGRectIsEmpty(frame)) return;
+    ensureAppIconTintOverlay(self_);
     glass.frame = frame;
     glass.cornerRadius = LGAppIconCornerRadius();
     glass.bezelWidth = LGAppIconBezelWidth();

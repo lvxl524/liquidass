@@ -20,6 +20,14 @@
 #define PROC_PIDPATHINFO_MAXSIZE 4096
 #endif
 
+#ifndef LG_PACKAGE_VERSION
+#define LG_PACKAGE_VERSION @"unknown"
+#endif
+
+#ifndef LG_BUILD_TIMESTAMP
+#define LG_BUILD_TIMESTAMP @"unknown"
+#endif
+
 extern int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int buffersize);
 extern int proc_name(int pid, void *buffer, uint32_t buffersize);
 
@@ -1780,7 +1788,10 @@ static void LG_startDebugMainThreadStallProbe(void) {
     if (!LGIsSpringBoardProcess()) return;
 
     LGReloadPreferences();
-    LGLog(@"loaded into %@", LGMainBundleIdentifier() ?: @"(unknown)");
+    LGLog(@"loaded into %@ version=%@ built=%@",
+          LGMainBundleIdentifier() ?: @"(unknown)",
+          LG_PACKAGE_VERSION,
+          LG_BUILD_TIMESTAMP);
     LG_startDebugMainThreadStallProbe();
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         LGPrewarmPipelines();
