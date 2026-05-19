@@ -100,7 +100,12 @@ BOOL LGCaptureLiveBackdropTextureForHost(UIView *host,
     }
 
     CGRect captureRect = (CGRect){ captureOrigin, captureSize };
-    CGRect captureRectInScreen = [superview convertRect:captureRect toView:nil];
+    CGRect captureRectInScreen = CGRectZero;
+    if (@available(iOS 13.0, *)) {
+        captureRectInScreen = [superview convertRect:captureRect toCoordinateSpace:UIScreen.mainScreen.coordinateSpace];
+    } else {
+        captureRectInScreen = [superview convertRect:captureRect toView:nil];
+    }
     if (!isfinite(CGRectGetMinX(captureRectInScreen)) ||
         !isfinite(CGRectGetMinY(captureRectInScreen)) ||
         !isfinite(CGRectGetWidth(captureRectInScreen)) ||

@@ -1099,7 +1099,12 @@ static BOOL LGClockViewIsVisiblyPresent(UIView *view) {
         screenFrame = [view convertRect:view.bounds toView:nil];
     }
     if (CGRectGetWidth(screenFrame) <= 1.0 || CGRectGetHeight(screenFrame) <= 1.0) return NO;
-    return CGRectIntersectsRect(CGRectInset(UIScreen.mainScreen.bounds, -8.0, -8.0), screenFrame);
+    CGRect screenBounds = UIScreen.mainScreen.bounds;
+    if (@available(iOS 8.0, *)) {
+        id<UICoordinateSpace> space = UIScreen.mainScreen.coordinateSpace;
+        if (space && !CGRectIsEmpty(space.bounds)) screenBounds = space.bounds;
+    }
+    return CGRectIntersectsRect(CGRectInset(screenBounds, -8.0, -8.0), screenFrame);
 }
 
 static BOOL LGClockViewLooksLikePresentationBlocker(UIView *view, UIView *host) {

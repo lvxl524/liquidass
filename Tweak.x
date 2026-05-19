@@ -32,6 +32,8 @@ extern int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int buf
 extern int proc_name(int pid, void *buffer, uint32_t buffersize);
 
 static BOOL LG_isAtLeastiOS16(void);
+static CGSize LG_activeScreenSize(void);
+static CGRect LG_activeScreenCoordinateBounds(void);
 static CFStringRef const LGInvalidateSnapshotCachesNotification = CFSTR("love.litten.liquidass/InvalidateSnapshotCaches");
 static const size_t kLGBlackImageSampleGrid = 5;
 void LGRefreshLockSnapshotAfterDelay(NSTimeInterval delay);
@@ -113,7 +115,7 @@ void LG_unregisterGlassView(UIView *view, LGUpdateGroup group) {
 
 static void LG_updateGlassHashTable(NSHashTable *table) {
     if (!table.count) return;
-    CGRect screenBounds = UIScreen.mainScreen.bounds;
+    CGRect screenBounds = LG_activeScreenCoordinateBounds();
     for (LiquidGlassView *glass in table) {
         if (!glass.superview) continue;
         if (!glass.window) continue;
@@ -170,8 +172,9 @@ BOOL LG_isFullScreenDevice(void) {
             }
         }
         if (!sResult) {
-            CGFloat h = UIScreen.mainScreen.bounds.size.height;
-            CGFloat w = UIScreen.mainScreen.bounds.size.width;
+            CGSize screenSize = LG_activeScreenSize();
+            CGFloat h = screenSize.height;
+            CGFloat w = screenSize.width;
             CGFloat longerSide = MAX(h, w);
             sResult = (longerSide >= 812.0);
         }
@@ -198,6 +201,27 @@ static UIWindow *LG_getWallpaperWindow(BOOL secureOnly) {
         }
     }
     return secureOnly ? nil : secureFallback;
+}
+
+static CGRect LG_activeScreenCoordinateBounds(void) {
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            if (windowScene.activationState == UISceneActivationStateUnattached) continue;
+            CGRect bounds = windowScene.coordinateSpace.bounds;
+            if (!CGRectIsEmpty(bounds)) return bounds;
+        }
+    }
+    if (@available(iOS 8.0, *)) {
+        id<UICoordinateSpace> space = UIScreen.mainScreen.coordinateSpace;
+        if (space && !CGRectIsEmpty(space.bounds)) return space.bounds;
+    }
+    return UIScreen.mainScreen.bounds;
+}
+
+static CGSize LG_activeScreenSize(void) {
+    return LG_activeScreenCoordinateBounds().size;
 }
 
 static BOOL LG_viewMatchesHierarchyClass(UIView *view, Class cls) {
@@ -286,7 +310,7 @@ static UIImageView *LG_getWallpaperImageView(UIWindow *win, BOOL lockscreen) {
 
 static CGPoint LG_centeredWallpaperOriginForImage(UIImage *image) {
     if (!image) return CGPointZero;
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
+    CGSize screenSize = LG_activeScreenSize();
     return CGPointMake((screenSize.width - image.size.width) * 0.5,
                        (screenSize.height - image.size.height) * 0.5);
 }
@@ -371,6 +395,16 @@ static NSUInteger LGImageMemoryCost(UIImage *image) {
     CGFloat width = image.size.width * MAX(image.scale, 1.0);
     CGFloat height = image.size.height * MAX(image.scale, 1.0);
     return (NSUInteger)lrint(width * height * 4.0);
+}
+
+static BOOL LGImageMatchesActiveScreenPixelSize(UIImage *image) {
+    CGImageRef imageRef = image.CGImage;
+    if (!imageRef) return NO;
+    CGFloat screenScale = UIScreen.mainScreen.scale ?: 1.0;
+    CGSize screenSize = LG_activeScreenSize();
+    size_t expectedWidth = MAX((size_t)1, (size_t)lrint(screenSize.width * screenScale));
+    size_t expectedHeight = MAX((size_t)1, (size_t)lrint(screenSize.height * screenScale));
+    return CGImageGetWidth(imageRef) == expectedWidth && CGImageGetHeight(imageRef) == expectedHeight;
 }
 
 static unsigned long long LGRuntimeImageCacheUsageBytes(void) {
@@ -474,19 +508,18 @@ static UIImage *LG_loadFlattenedHomescreenWallpaperFile(void) {
     if (sCachedSpringBoardHomeImage &&
         [sCachedSpringBoardHomePath isEqualToString:path] &&
         ((!mtime && !sCachedSpringBoardHomeMTime) || [sCachedSpringBoardHomeMTime isEqualToDate:mtime])) {
-        return sCachedSpringBoardHomeImage;
+        if (LGImageMatchesActiveScreenPixelSize(sCachedSpringBoardHomeImage))
+            return sCachedSpringBoardHomeImage;
+        LGSetCachedSpringBoardHomeImageValue(nil);
+        sCachedSpringBoardHomeMTime = nil;
+        sCachedSpringBoardHomePath = nil;
     }
 
     UIImage *image = [UIImage imageWithContentsOfFile:path];
     if (!image) return nil;
     CGImageRef imageRef = image.CGImage;
     CGFloat screenScale = UIScreen.mainScreen.scale ?: 1.0;
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
-    size_t expectedWidth = MAX((size_t)1, (size_t)lrint(screenSize.width * screenScale));
-    size_t expectedHeight = MAX((size_t)1, (size_t)lrint(screenSize.height * screenScale));
-    if (!imageRef ||
-        CGImageGetWidth(imageRef) != expectedWidth ||
-        CGImageGetHeight(imageRef) != expectedHeight) {
+    if (!LGImageMatchesActiveScreenPixelSize(image)) {
         [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
         return nil;
     }
@@ -526,19 +559,18 @@ static UIImage *LG_loadFlattenedLockscreenWallpaperFile(void) {
     if (sCachedSpringBoardLockImage &&
         [sCachedSpringBoardLockPath isEqualToString:path] &&
         ((!mtime && !sCachedSpringBoardLockMTime) || [sCachedSpringBoardLockMTime isEqualToDate:mtime])) {
-        return sCachedSpringBoardLockImage;
+        if (LGImageMatchesActiveScreenPixelSize(sCachedSpringBoardLockImage))
+            return sCachedSpringBoardLockImage;
+        LGSetCachedSpringBoardLockImageValue(nil);
+        sCachedSpringBoardLockMTime = nil;
+        sCachedSpringBoardLockPath = nil;
     }
 
     UIImage *image = [UIImage imageWithContentsOfFile:path];
     if (!image) return nil;
     CGImageRef imageRef = image.CGImage;
     CGFloat screenScale = UIScreen.mainScreen.scale ?: 1.0;
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
-    size_t expectedWidth = MAX((size_t)1, (size_t)lrint(screenSize.width * screenScale));
-    size_t expectedHeight = MAX((size_t)1, (size_t)lrint(screenSize.height * screenScale));
-    if (!imageRef ||
-        CGImageGetWidth(imageRef) != expectedWidth ||
-        CGImageGetHeight(imageRef) != expectedHeight) {
+    if (!LGImageMatchesActiveScreenPixelSize(image)) {
         [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
         return nil;
     }
@@ -1071,7 +1103,7 @@ static BOOL LG_drawLockscreenWallpaperInContext(CGSize screenSize) {
 }
 
 static UIImage *LG_captureFreshLockscreenWallpaperSnapshot(void) {
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
+    CGSize screenSize = LG_activeScreenSize();
     CGFloat scale     = UIScreen.mainScreen.scale;
 
     UIGraphicsBeginImageContextWithOptions(screenSize, YES, scale);
@@ -1101,7 +1133,7 @@ void LG_refreshHomescreenSnapshot(void) {
         LGDebugLog(@"refresh homescreen snapshot source=asset file=%@ imageView=%d screen=%@ image=%@ scale=%.2f orientation=%ld",
                    LG_preferredSpringBoardWallpaperPath(NO).lastPathComponent ?: @"(unknown)",
                    iv ? 1 : 0,
-                   NSStringFromCGSize(UIScreen.mainScreen.bounds.size),
+                   NSStringFromCGSize(LG_activeScreenSize()),
                    NSStringFromCGSize(asset.size),
                    asset.scale,
                    (long)asset.imageOrientation);
@@ -1121,7 +1153,7 @@ void LG_refreshHomescreenSnapshot(void) {
         return;
     }
 
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
+    CGSize screenSize = LG_activeScreenSize();
     CGFloat scale     = UIScreen.mainScreen.scale;
 
     UIGraphicsBeginImageContextWithOptions(screenSize, YES, scale);
@@ -1443,7 +1475,7 @@ static UIImage *LG_captureContextMenuSnapshotWithHiddenGlass(BOOL hideGlass) {
     sContextMenuSnapshotCaptureInFlight = YES;
     CFTimeInterval start = CACurrentMediaTime();
 
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
+    CGSize screenSize = LG_activeScreenSize();
     CGFloat scale     = UIScreen.mainScreen.scale;
 
     NSMutableArray *hiddenViews = [NSMutableArray array];
@@ -1566,7 +1598,7 @@ UIImage *LG_getHomescreenIconCompositeSnapshot(CGPoint *outOriginInScreenPts) {
         return nil;
     }
 
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
+    CGSize screenSize = LG_activeScreenSize();
     CGFloat scale = UIScreen.mainScreen.scale;
     UIWindow *homescreenWindow = LG_getHomescreenWindow();
     UIView *targetView = LG_contextSnapshotTargetView(homescreenWindow);
@@ -1811,6 +1843,25 @@ static void LG_startDebugMainThreadStallProbe(void) {
     });
 }
 
+static void LG_handleScreenGeometryChanged(void) {
+    static NSUInteger sScreenGeometryChangeToken = 0;
+    NSUInteger token = ++sScreenGeometryChangeToken;
+    CGSize screenSize = LG_activeScreenSize();
+    LGDebugLog(@"screen geometry changed scheduled screen=%@", NSStringFromCGSize(screenSize));
+    LGScheduleBlockAfterDelay(0.18, ^{
+        if (token != sScreenGeometryChangeToken) return;
+        if (!LG_globalEnabled()) return;
+        LGDebugLog(@"screen geometry changed refreshing screen=%@", NSStringFromCGSize(LG_activeScreenSize()));
+        LGResetHomescreenSnapshotCaches();
+        LGResetLockscreenSnapshotCaches();
+        LG_refreshHomescreenSnapshot();
+        if (sCachedSnapshot) LG_pushSnapshotToAllGlassViews();
+        else LG_trySnapshotWithRetry();
+        LGRefreshLockSnapshotAfterDelay(0.0);
+        LG_updateRegisteredGlassViews(LGUpdateGroupAll);
+    });
+}
+
 %ctor {
     if (!LGIsSpringBoardProcess()) return;
 
@@ -1826,6 +1877,12 @@ static void LG_startDebugMainThreadStallProbe(void) {
     });
     dispatch_async(dispatch_get_main_queue(), ^{
         LG_startLegacyWallpaperWatcher();
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIDeviceOrientationDidChangeNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(__unused NSNotification *note) {
+            LG_handleScreenGeometryChanged();
+        }];
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidReceiveMemoryWarningNotification
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
@@ -2130,7 +2187,7 @@ static void LGHandleWallpaperReplicaView(UIView *replicaView) {
     }
     UIImage *image = imageView.image;
     if (!image) return;
-    CGSize screen = UIScreen.mainScreen.bounds.size;
+    CGSize screen = LG_activeScreenSize();
     if (image.size.width < screen.width * 0.5) return;
 
     UIImage *lastImage = objc_getAssociatedObject(replicaView, kLGReplicaObservedImageKey);
@@ -2303,7 +2360,7 @@ static void LGTouchDiagLogTouchBegan(UIWindow *window, UITouch *touch, UIEvent *
     LGDebugLog(@"homescreen rotation will size=%@ beforeOrientation=%ld screen=%@ snapshot=%@",
                NSStringFromCGSize(size),
                (long)beforeOrientation,
-               NSStringFromCGSize(UIScreen.mainScreen.bounds.size),
+               NSStringFromCGSize(LG_activeScreenSize()),
                sCachedSnapshot ? NSStringFromCGSize(sCachedSnapshot.size) : @"(null)");
     %orig;
     if (![coordinator respondsToSelector:@selector(animateAlongsideTransition:completion:)]) return;
@@ -2315,7 +2372,7 @@ static void LGTouchDiagLogTouchBegan(UIWindow *window, UITouch *touch, UIEvent *
         }
         LGDebugLog(@"homescreen rotation alongside orientation=%ld screen=%@",
                    (long)duringOrientation,
-                   NSStringFromCGSize(UIScreen.mainScreen.bounds.size));
+                   NSStringFromCGSize(LG_activeScreenSize()));
     } completion:^(__unused id context) {
         if (LG_globalEnabled()) {
             LGSetCachedSnapshotImage(nil);
@@ -2337,7 +2394,7 @@ static void LGTouchDiagLogTouchBegan(UIWindow *window, UITouch *touch, UIEvent *
         UIImage *snapshot = LG_getHomescreenSnapshot(&origin);
         LGDebugLog(@"homescreen rotation done orientation=%ld screen=%@ snapshot=%@ origin=%@",
                    (long)afterOrientation,
-                   NSStringFromCGSize(UIScreen.mainScreen.bounds.size),
+                   NSStringFromCGSize(LG_activeScreenSize()),
                    snapshot ? NSStringFromCGSize(snapshot.size) : @"(null)",
                    NSStringFromCGPoint(origin));
     }];

@@ -18,18 +18,152 @@ typedef struct {
     float specularAngle;
     float blur;
     vector_float2 wallpaperOrigin;
+    vector_float2 samplingTransformX;
+    vector_float2 samplingTransformY;
+    vector_float2 samplingTransformOffset;
     float samplingOrientation;
     float hasShapeMask;
 } LGUniforms;
 
-static float LG_samplingOrientationForGlassView(UIView *view, LGUpdateGroup group) {
-    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad) return 1.0f;
-    if (group == LGUpdateGroupLockscreen) return 1.0f;
+static float LG_samplingOrientationForGlassView(__unused UIView *view, __unused LGUpdateGroup group) {
+    // Visual rects are already converted into UIScreen.coordinateSpace. Sampling in
+    // the same coordinate space avoids the old iPad-only double rotation path.
+    return 1.0f;
+}
+
+typedef struct {
+    vector_float2 x;
+    vector_float2 y;
+    vector_float2 offset;
+    BOOL fixedCoordinateSpace;
+    BOOL sourceLooksFixedScreen;
+    BOOL swapsAxes;
+    UIInterfaceOrientation interfaceOrientation;
+    UIDeviceOrientation deviceOrientation;
+} LGSamplingTransform;
+
+static CGRect LG_fixedScreenCoordinateBounds(void) {
+    if (@available(iOS 8.0, *)) {
+        id<UICoordinateSpace> space = UIScreen.mainScreen.fixedCoordinateSpace;
+        if (space && !CGRectIsEmpty(space.bounds)) return space.bounds;
+    }
+    return UIScreen.mainScreen.bounds;
+}
+
+static UIInterfaceOrientation LG_interfaceOrientationForGlassView(UIView *view) {
     if (@available(iOS 13.0, *)) {
         UIWindowScene *scene = view.window.windowScene;
-        if (scene) return (float)scene.interfaceOrientation;
+        if (scene) return scene.interfaceOrientation;
     }
-    return 1.0f;
+    return UIInterfaceOrientationUnknown;
+}
+
+static CGRect LG_screenCoordinateBoundsForGlassView(UIView *view) {
+    if (@available(iOS 8.0, *)) {
+        id<UICoordinateSpace> space = UIScreen.mainScreen.coordinateSpace;
+        if (space) return space.bounds;
+    }
+    return UIScreen.mainScreen.bounds;
+}
+
+static CGFloat LGAspectError(CGSize a, CGSize b) {
+    if (a.width <= 1.0 || a.height <= 1.0 || b.width <= 1.0 || b.height <= 1.0) return CGFLOAT_MAX;
+    CGFloat aspectA = a.width / a.height;
+    CGFloat aspectB = b.width / b.height;
+    return fabs(log(MAX(aspectA, 0.0001) / MAX(aspectB, 0.0001)));
+}
+
+static BOOL LG_samplingSourceLooksFixedScreen(CGSize sourcePixelSize, CGRect currentBounds, CGRect fixedBounds, CGFloat scale) {
+    if (CGSizeEqualToSize(sourcePixelSize, CGSizeZero)) return NO;
+    CGSize currentPixelSize = CGSizeMake(CGRectGetWidth(currentBounds) * scale,
+                                         CGRectGetHeight(currentBounds) * scale);
+    CGSize fixedPixelSize = CGSizeMake(CGRectGetWidth(fixedBounds) * scale,
+                                       CGRectGetHeight(fixedBounds) * scale);
+    if (fabs(currentPixelSize.width - fixedPixelSize.width) < 1.0 &&
+        fabs(currentPixelSize.height - fixedPixelSize.height) < 1.0) {
+        return NO;
+    }
+
+    CGFloat currentError = LGAspectError(sourcePixelSize, currentPixelSize);
+    CGFloat fixedError = LGAspectError(sourcePixelSize, fixedPixelSize);
+    return fixedError + 0.01 < currentError;
+}
+
+static BOOL LG_imageUsesFixedScreenSampling(UIImage *image) {
+    NSString *cacheKey = LGImageStableCacheKey(image);
+    return [cacheKey hasPrefix:@"wallpaper:home:"] ||
+        [cacheKey hasPrefix:@"wallpaper:lock:"] ||
+        [cacheKey hasPrefix:@"wallpaper:home-flat"] ||
+        [cacheKey hasPrefix:@"wallpaper:lock-flat"];
+}
+
+static LGSamplingTransform LG_samplingTransformForGlassView(UIView *view,
+                                                            CGSize sourcePixelSize,
+                                                            BOOL usesExternalWallpaperTexture,
+                                                            BOOL usesFixedScreenSampling) {
+    CGFloat scale = UIScreen.mainScreen.scale ?: 1.0;
+    CGRect currentBounds = LG_screenCoordinateBoundsForGlassView(view);
+    CGRect fixedBounds = LG_fixedScreenCoordinateBounds();
+    LGSamplingTransform transform = {
+        .x = { 1.0f, 0.0f },
+        .y = { 0.0f, 1.0f },
+        .offset = { 0.0f, 0.0f },
+        .fixedCoordinateSpace = NO,
+        .sourceLooksFixedScreen = NO,
+        .swapsAxes = NO,
+        .interfaceOrientation = LG_interfaceOrientationForGlassView(view),
+        .deviceOrientation = UIDevice.currentDevice.orientation,
+    };
+
+    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad) return transform;
+    if (usesExternalWallpaperTexture) return transform;
+    transform.sourceLooksFixedScreen = LG_samplingSourceLooksFixedScreen(sourcePixelSize, currentBounds, fixedBounds, scale);
+    if (!usesFixedScreenSampling && !transform.sourceLooksFixedScreen) {
+        return transform;
+    }
+
+    if (@available(iOS 8.0, *)) {
+        id<UICoordinateSpace> currentSpace = UIScreen.mainScreen.coordinateSpace;
+        id<UICoordinateSpace> fixedSpace = UIScreen.mainScreen.fixedCoordinateSpace;
+        if (!currentSpace || !fixedSpace) return transform;
+
+        CGPoint p0 = [currentSpace convertPoint:CGPointZero toCoordinateSpace:fixedSpace];
+        CGPoint px = [currentSpace convertPoint:CGPointMake(1.0, 0.0) toCoordinateSpace:fixedSpace];
+        CGPoint py = [currentSpace convertPoint:CGPointMake(0.0, 1.0) toCoordinateSpace:fixedSpace];
+        vector_float2 xAxis = (vector_float2){ (float)(px.x - p0.x), (float)(px.y - p0.y) };
+        vector_float2 yAxis = (vector_float2){ (float)(py.x - p0.x), (float)(py.y - p0.y) };
+        BOOL swapsAxes = fabsf(xAxis.y) > 0.5f || fabsf(yAxis.x) > 0.5f;
+        transform.swapsAxes = swapsAxes;
+        if (!usesFixedScreenSampling && !swapsAxes) return transform;
+
+        transform.x = xAxis;
+        transform.y = yAxis;
+        transform.offset = (vector_float2){ (float)(p0.x * scale), (float)(p0.y * scale) };
+        transform.fixedCoordinateSpace = YES;
+    }
+    return transform;
+}
+
+static vector_float2 LGApplySamplingTransform(LGSamplingTransform transform, vector_float2 screenPx) {
+    return transform.offset + screenPx.x * transform.x + screenPx.y * transform.y;
+}
+
+static NSString *LGFormatSamplePoint(NSString *name,
+                                     vector_float2 screenPx,
+                                     LGSamplingTransform transform,
+                                     vector_float2 wallpaperOriginPx,
+                                     CGSize sourcePixelSize) {
+    vector_float2 mappedPx = LGApplySamplingTransform(transform, screenPx);
+    vector_float2 imgPx = mappedPx - wallpaperOriginPx;
+    CGFloat sourceW = MAX(sourcePixelSize.width, 1.0);
+    CGFloat sourceH = MAX(sourcePixelSize.height, 1.0);
+    return [NSString stringWithFormat:@"%@ screen={%.1f,%.1f} mapped={%.1f,%.1f} img={%.1f,%.1f} uv={%.3f,%.3f}",
+            name,
+            screenPx.x, screenPx.y,
+            mappedPx.x, mappedPx.y,
+            imgPx.x, imgPx.y,
+            imgPx.x / (float)sourceW,
+            imgPx.y / (float)sourceH];
 }
 
 static NSInteger LG_defaultPreferredFPS(void) {
@@ -197,6 +331,10 @@ void LGPrewarmPipelines(void) {
     LGZeroCopyBridge *_shapeMaskBridge;
     LGZeroCopyBridge *_wallpaperTextureBridge;
     BOOL _usesExternalWallpaperTexture;
+    BOOL _usesFixedScreenSampling;
+    NSString *_sourceCacheKey;
+    NSString *_lastIPadSamplingDiagnosticSignature;
+    CFTimeInterval _lastIPadSamplingDiagnosticTime;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame wallpaper:(UIImage *)wallpaper wallpaperOrigin:(CGPoint)origin {
@@ -241,6 +379,8 @@ void LGPrewarmPipelines(void) {
         self.layer.cornerCurve = kCACornerCurveContinuous;
 
     _wallpaperImage = wallpaper;
+    _usesFixedScreenSampling = LG_imageUsesFixedScreenSampling(wallpaper);
+    _sourceCacheKey = [LGImageStableCacheKey(wallpaper) copy];
     return self;
 }
 
@@ -334,6 +474,8 @@ void LGPrewarmPipelines(void) {
 - (void)setWallpaperImage:(UIImage *)img {
     if (!_usesExternalWallpaperTexture && _wallpaperImage == img) return;
     _usesExternalWallpaperTexture = NO;
+    _usesFixedScreenSampling = LG_imageUsesFixedScreenSampling(img);
+    _sourceCacheKey = [LGImageStableCacheKey(img) copy];
     _wallpaperTextureBridge = nil;
     _cacheEntry = nil;
     _wallpaperImage = img;
@@ -394,16 +536,18 @@ void LGPrewarmPipelines(void) {
     if (self.hidden || self.alpha <= 0.01f || self.layer.opacity <= 0.01f) return;
     BOOL metricsChanged = [self _refreshVisualMetrics];
     CGFloat scale = UIScreen.mainScreen.scale;
-    CGRect screenBoundsPx = CGRectMake(0, 0,
-                                       UIScreen.mainScreen.bounds.size.width * scale,
-                                       UIScreen.mainScreen.bounds.size.height * scale);
+    CGRect screenBounds = LG_screenCoordinateBoundsForGlassView(self);
+    CGRect screenBoundsPx = CGRectMake(CGRectGetMinX(screenBounds) * scale,
+                                       CGRectGetMinY(screenBounds) * scale,
+                                       CGRectGetWidth(screenBounds) * scale,
+                                       CGRectGetHeight(screenBounds) * scale);
     if (!CGRectIntersectsRect(_cachedVisualRectPx, screenBoundsPx)) return;
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && metricsChanged) {
         LGDebugLog(@"glass update group=%ld bounds=%@ visualPx=%@ screen=%@ origin=%@ wallpaper=%@",
                    (long)_updateGroup,
                    NSStringFromCGRect(self.bounds),
                    NSStringFromCGRect(_cachedVisualRectPx),
-                   NSStringFromCGSize(UIScreen.mainScreen.bounds.size),
+                   NSStringFromCGSize(screenBounds.size),
                    NSStringFromCGPoint(_wallpaperOriginPt),
                    self.wallpaperImage ? NSStringFromCGSize(self.wallpaperImage.size) : @"(null)");
     }
@@ -442,6 +586,7 @@ void LGPrewarmPipelines(void) {
     CGRect visualRect;
     BOOL useDirectScreenConversion = (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad &&
                                       _updateGroup != LGUpdateGroupLockscreen &&
+                                      _updateGroup != LGUpdateGroupFolderOpen &&
                                       self.window != nil);
     if (useDirectScreenConversion) {
         CGRect screenRect = self.window.windowScene
@@ -611,6 +756,8 @@ void LGPrewarmPipelines(void) {
     if (!texture) return;
 
     _usesExternalWallpaperTexture = YES;
+    _usesFixedScreenSampling = NO;
+    _sourceCacheKey = [NSString stringWithFormat:@"live:%zux%zu", width, height];
     _wallpaperImage = nil;
     _cacheEntry = nil;
     _bgTexture = texture;
@@ -750,8 +897,9 @@ void LGPrewarmPipelines(void) {
     }
 
     CGFloat scale = UIScreen.mainScreen.scale;
-    CGFloat screenW = UIScreen.mainScreen.bounds.size.width * scale;
-    CGFloat screenH = UIScreen.mainScreen.bounds.size.height * scale;
+    CGRect screenBounds = LG_screenCoordinateBoundsForGlassView(self);
+    CGFloat screenW = CGRectGetWidth(screenBounds) * scale;
+    CGFloat screenH = CGRectGetHeight(screenBounds) * scale;
 
     float visOriginX = CGRectGetMinX(_cachedVisualRectPx);
     float visOriginY = CGRectGetMinY(_cachedVisualRectPx);
@@ -763,16 +911,12 @@ void LGPrewarmPipelines(void) {
         !CGSizeEqualToSize(_wallpaperSamplingResolution, CGSizeZero)
             ? _wallpaperSamplingResolution
             : _sourceWallpaperPixelSize;
+    LGSamplingTransform samplingTransform =
+        LG_samplingTransformForGlassView(self,
+                                         samplingWallpaperPixelSize,
+                                         _usesExternalWallpaperTexture,
+                                         _usesFixedScreenSampling);
 
-    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        LGDebugLog(@"glass draw group=%ld screenPx={%.1f %.1f} visualPx=%@ drawable=%@ wallpaperPx=%@ wallpaperOrigin=%@",
-                   (long)_updateGroup,
-                   screenW, screenH,
-                   NSStringFromCGRect(_cachedVisualRectPx),
-                   NSStringFromCGSize(drawableSize),
-                   NSStringFromCGSize(samplingWallpaperPixelSize),
-                   NSStringFromCGPoint(_wallpaperOriginPt));
-    }
     float imgW = (float)_bgTexture.width;
     float imgH = (float)_bgTexture.height;
     float samplingW = (float)samplingWallpaperPixelSize.width;
@@ -781,6 +925,67 @@ void LGPrewarmPipelines(void) {
         ? fmaxf(samplingW / imgW, samplingH / imgH)
         : fmaxf((float)screenW / imgW, (float)screenH / imgH);
     float blurPx = (float)_blur * (float)scale / fillScale;
+
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        CGRect fixedBounds = LG_fixedScreenCoordinateBounds();
+        vector_float2 wallpaperOriginPx = {
+            (float)(_wallpaperOriginPt.x * scale),
+            (float)(_wallpaperOriginPt.y * scale)
+        };
+        vector_float2 topLeft = { visOriginX, visOriginY };
+        vector_float2 center = { visOriginX + visW * 0.5f, visOriginY + visH * 0.5f };
+        vector_float2 bottomCenter = { visOriginX + visW * 0.5f, visOriginY + visH };
+        vector_float2 bottomRight = { visOriginX + visW, visOriginY + visH };
+        NSString *sourceKey = _sourceCacheKey ?: @"(none)";
+        NSString *signature = [NSString stringWithFormat:@"%ld|%@|%.0f,%.0f,%.0f,%.0f|%.0f,%.0f|%.0f,%.0f|%.0f,%.0f|%d|%d|%d|%d|%ld|%ld",
+                               (long)_updateGroup,
+                               sourceKey,
+                               visOriginX, visOriginY, visW, visH,
+                               samplingW, samplingH,
+                               samplingTransform.offset.x, samplingTransform.offset.y,
+                               samplingTransform.x.y, samplingTransform.y.x,
+                               _usesExternalWallpaperTexture ? 1 : 0,
+                               _usesFixedScreenSampling ? 1 : 0,
+                               samplingTransform.sourceLooksFixedScreen ? 1 : 0,
+                               samplingTransform.fixedCoordinateSpace ? 1 : 0,
+                               (long)samplingTransform.interfaceOrientation,
+                               (long)samplingTransform.deviceOrientation];
+        CFTimeInterval now = CACurrentMediaTime();
+        BOOL shouldLogDiagnostic = ![_lastIPadSamplingDiagnosticSignature isEqualToString:signature] ||
+            (now - _lastIPadSamplingDiagnosticTime) >= 1.5;
+        if (shouldLogDiagnostic) {
+            _lastIPadSamplingDiagnosticSignature = [signature copy];
+            _lastIPadSamplingDiagnosticTime = now;
+            LGDebugLog(@"ipad sampling diag group=%ld view=%@ source=%@ external=%d fixedSource=%d fixedGuess=%d fixedMap=%d swapsAxes=%d interface=%ld device=%ld currentBounds=%@ fixedBounds=%@ visualPx=%@ drawable=%@ bgTex={%.0f,%.0f} sourcePx=%@ screenPx={%.1f,%.1f} originPt=%@ originPx={%.1f,%.1f} mapX={%.2f,%.2f} mapY={%.2f,%.2f} mapO={%.1f,%.1f} fill=%.3f %@ | %@ | %@ | %@",
+                       (long)_updateGroup,
+                       NSStringFromClass(self.class),
+                       sourceKey,
+                       _usesExternalWallpaperTexture ? 1 : 0,
+                       _usesFixedScreenSampling ? 1 : 0,
+                       samplingTransform.sourceLooksFixedScreen ? 1 : 0,
+                       samplingTransform.fixedCoordinateSpace ? 1 : 0,
+                       samplingTransform.swapsAxes ? 1 : 0,
+                       (long)samplingTransform.interfaceOrientation,
+                       (long)samplingTransform.deviceOrientation,
+                       NSStringFromCGRect(screenBounds),
+                       NSStringFromCGRect(fixedBounds),
+                       NSStringFromCGRect(_cachedVisualRectPx),
+                       NSStringFromCGSize(drawableSize),
+                       imgW, imgH,
+                       NSStringFromCGSize(samplingWallpaperPixelSize),
+                       screenW, screenH,
+                       NSStringFromCGPoint(_wallpaperOriginPt),
+                       wallpaperOriginPx.x, wallpaperOriginPx.y,
+                       samplingTransform.x.x, samplingTransform.x.y,
+                       samplingTransform.y.x, samplingTransform.y.y,
+                       samplingTransform.offset.x, samplingTransform.offset.y,
+                       fillScale,
+                       LGFormatSamplePoint(@"tl", topLeft, samplingTransform, wallpaperOriginPx, samplingWallpaperPixelSize),
+                       LGFormatSamplePoint(@"center", center, samplingTransform, wallpaperOriginPx, samplingWallpaperPixelSize),
+                       LGFormatSamplePoint(@"bottomCenter", bottomCenter, samplingTransform, wallpaperOriginPx, samplingWallpaperPixelSize),
+                       LGFormatSamplePoint(@"bottomRight", bottomRight, samplingTransform, wallpaperOriginPx, samplingWallpaperPixelSize));
+        }
+    }
 
     if ((_needsBlurBake || blurPx != _lastBakedBlurRadius) && _cacheEntry) {
         LGBlurVariant *variant = _cacheEntry.blurVariants[LGBlurSettingKey(_blur)];
@@ -823,6 +1028,9 @@ void LGPrewarmPipelines(void) {
         .blur = blurPx,
         .wallpaperOrigin = { (float)(_wallpaperOriginPt.x * scale),
                              (float)(_wallpaperOriginPt.y * scale) },
+        .samplingTransformX = samplingTransform.x,
+        .samplingTransformY = samplingTransform.y,
+        .samplingTransformOffset = samplingTransform.offset,
         .samplingOrientation = samplingOrientation,
         .hasShapeMask = _shapeMaskTexture ? 1.0f : 0.0f,
     };

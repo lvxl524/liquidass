@@ -13,6 +13,8 @@ static void *kFolderOpenTintKey = &kFolderOpenTintKey;
 static void *kFolderOpenResanitizePendingKey = &kFolderOpenResanitizePendingKey;
 static void *kFolderOpenLastLiveCaptureTimeKey = &kFolderOpenLastLiveCaptureTimeKey;
 static void *kFolderOpenBackdropViewKey = &kFolderOpenBackdropViewKey;
+static void *kFolderOpenLastDiagnosticKey = &kFolderOpenLastDiagnosticKey;
+static void *kFolderOpenLastDiagnosticTimeKey = &kFolderOpenLastDiagnosticTimeKey;
 static NSHashTable<UIView *> *sFolderOpenHosts = nil;
 
 static BOOL isInsideOpenFolder(UIView *view) {
@@ -26,12 +28,38 @@ static BOOL isInsideOpenFolder(UIView *view) {
     return NO;
 }
 
+static BOOL LGFolderOpenHasAncestorClassNamed(UIView *view, NSString *className) {
+    if (!view || !className.length) return NO;
+    UIView *v = view;
+    while (v) {
+        if ([NSStringFromClass(v.class) isEqualToString:className]) return YES;
+        v = v.superview;
+    }
+    return NO;
+}
+
+static BOOL LGIsInsideFloatyOpenFolder(UIView *view) {
+    return LGFolderOpenHasAncestorClassNamed(view, @"SBFloatyFolderView") ||
+        LGFolderOpenHasAncestorClassNamed(view, @"SBFloatyFolderScrollView") ||
+        LGFolderOpenHasAncestorClassNamed(view, @"SBFloatyFolderBackgroundClipView");
+}
+
 static UIView *folderOpenContainerForView(UIView *view) {
     static Class cls;
     if (!cls) cls = NSClassFromString(@"SBFolderBackgroundView");
     UIView *v = view;
     while (v) {
         if ([v isKindOfClass:cls]) return v;
+        v = v.superview;
+    }
+    return nil;
+}
+
+static UIView *LGFolderOpenNearestAncestorClassNamed(UIView *view, NSString *className) {
+    if (!view || !className.length) return nil;
+    UIView *v = view;
+    while (v) {
+        if ([NSStringFromClass(v.class) isEqualToString:className]) return v;
         v = v.superview;
     }
     return nil;
@@ -46,6 +74,9 @@ static void LGDetachFolderOpenHost(UIView *view);
 static void LGHandleFolderOpenMaterialView(UIView *view, BOOL updateOnly);
 static BOOL LGIsPrimaryFolderOpenHost(UIView *view);
 static void LGStripFolderOpenTintFiltersFromLayerTree(CALayer *layer);
+static void LGFolderOpenLogHostState(UIView *host, NSString *reason);
+static void LGFolderOpenLogScrollState(UIScrollView *scrollView, NSString *reason);
+static void LGFolderOpenNormalizeFloatyClipView(UIView *clipView, NSString *reason);
 
 static LGDisplayLinkState sFolderDisplayLinkState = {0};
 static NSUInteger sFolderStopGeneration = 0;
@@ -231,6 +262,152 @@ static BOOL LGIsPrimaryFolderOpenHost(UIView *view) {
     return LGPrimaryFolderOpenHostForContainer(container) == view;
 }
 
+static UIScrollView *LGFolderOpenFindScrollView(UIView *view) {
+    UIView *container = folderOpenContainerForView(view) ?: view;
+    __block UIScrollView *scrollView = nil;
+    LGTraverseViews(container, ^(UIView *candidate) {
+        if (scrollView) return;
+        if (![candidate isKindOfClass:UIScrollView.class]) return;
+        NSString *className = NSStringFromClass(candidate.class);
+        if ([className containsString:@"Folder"] ||
+            [className containsString:@"Icon"] ||
+            [className containsString:@"Scroll"]) {
+            scrollView = (UIScrollView *)candidate;
+        }
+    });
+    return scrollView;
+}
+
+static NSString *LGFolderOpenLayerSummary(CALayer *layer) {
+    if (!layer) return @"(null)";
+    CALayer *presentation = layer.presentationLayer ?: layer;
+    NSUInteger backgroundFilterCount = 0;
+    @try {
+        id rawBackgroundFilters = [layer valueForKey:@"backgroundFilters"];
+        if ([rawBackgroundFilters isKindOfClass:NSArray.class])
+            backgroundFilterCount = [(NSArray *)rawBackgroundFilters count];
+    } @catch (__unused NSException *exception) {
+        backgroundFilterCount = 0;
+    }
+    return [NSString stringWithFormat:@"frame=%@ bounds=%@ pres=%@ radius=%.2f masks=%d opacity=%.2f filters=%lu bgFilters=%lu mask=%d",
+            NSStringFromCGRect(layer.frame),
+            NSStringFromCGRect(layer.bounds),
+            NSStringFromCGRect(presentation.frame),
+            layer.cornerRadius,
+            layer.masksToBounds ? 1 : 0,
+            layer.opacity,
+            (unsigned long)layer.filters.count,
+            (unsigned long)backgroundFilterCount,
+            layer.mask ? 1 : 0];
+}
+
+static NSString *LGFolderOpenViewSummary(UIView *view) {
+    if (!view) return @"(null)";
+    return [NSString stringWithFormat:@"%p %@ frame=%@ bounds=%@ alpha=%.2f hidden=%d clips=%d layer={%@}",
+            view,
+            NSStringFromClass(view.class),
+            NSStringFromCGRect(view.frame),
+            NSStringFromCGRect(view.bounds),
+            view.alpha,
+            view.hidden ? 1 : 0,
+            view.clipsToBounds ? 1 : 0,
+            LGFolderOpenLayerSummary(view.layer)];
+}
+
+static NSString *LGFolderOpenAncestorChainSummary(UIView *view) {
+    if (!view) return @"(null)";
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    UIView *v = view;
+    NSUInteger depth = 0;
+    while (v && depth < 10) {
+        [parts addObject:LGFolderOpenViewSummary(v)];
+        v = v.superview;
+        depth++;
+    }
+    return [parts componentsJoinedByString:@" <- "];
+}
+
+static UIView *LGFolderOpenAnyRegisteredHost(void) {
+    for (UIView *host in LGFolderOpenHostRegistry().allObjects) {
+        if (host.window) return host;
+    }
+    return nil;
+}
+
+static void LGFolderOpenLogHostState(UIView *host, NSString *reason) {
+    if (!host) return;
+    LiquidGlassView *glass = objc_getAssociatedObject(host, kFolderOpenGlassKey);
+    UIView *tint = objc_getAssociatedObject(host, kFolderOpenTintKey);
+    UIView *container = folderOpenContainerForView(host);
+    UIScrollView *scrollView = LGFolderOpenFindScrollView(host);
+    NSString *signature = [NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@|%@",
+                           NSStringFromCGRect(host.frame),
+                           NSStringFromCGRect(host.bounds),
+                           @(host.layer.cornerRadius),
+                           @(host.layer.masksToBounds),
+                           glass ? NSStringFromCGRect(glass.frame) : @"noglass",
+                           glass ? @(glass.layer.cornerRadius) : @"noglass",
+                           scrollView ? NSStringFromCGPoint(scrollView.contentOffset) : @"noscroll"];
+    NSString *lastSignature = objc_getAssociatedObject(host, kFolderOpenLastDiagnosticKey);
+    NSNumber *lastTimeNumber = objc_getAssociatedObject(host, kFolderOpenLastDiagnosticTimeKey);
+    CFTimeInterval now = CACurrentMediaTime();
+    if ([lastSignature isEqualToString:signature] &&
+        lastTimeNumber &&
+        now - lastTimeNumber.doubleValue < 0.35) {
+        return;
+    }
+    objc_setAssociatedObject(host, kFolderOpenLastDiagnosticKey, signature, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(host, kFolderOpenLastDiagnosticTimeKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    LGDebugLog(@"folder open diag reason=%@ primary=%d host={%@} glass={%@} tint={%@} container={%@} scroll=%@ contentOffset=%@ adjustedInset=%@",
+               reason ?: @"(unknown)",
+               LGIsPrimaryFolderOpenHost(host) ? 1 : 0,
+               LGFolderOpenViewSummary(host),
+               LGFolderOpenViewSummary(glass),
+               LGFolderOpenViewSummary(tint),
+               LGFolderOpenViewSummary(container),
+               scrollView ? NSStringFromClass(scrollView.class) : @"(none)",
+               scrollView ? NSStringFromCGPoint(scrollView.contentOffset) : @"(none)",
+               scrollView ? NSStringFromUIEdgeInsets(scrollView.adjustedContentInset) : @"(none)");
+}
+
+static void LGFolderOpenLogScrollState(UIScrollView *scrollView, NSString *reason) {
+    if (!scrollView) return;
+    UIView *container = LGFolderOpenNearestAncestorClassNamed(scrollView, @"SBFolderBackgroundView");
+    UIView *host = LGPrimaryFolderOpenHostForContainer(container) ?: LGFolderOpenAnyRegisteredHost();
+    UIView *clipView = LGFolderOpenNearestAncestorClassNamed(scrollView, @"SBFloatyFolderBackgroundClipView");
+    UIView *floatyView = LGFolderOpenNearestAncestorClassNamed(scrollView, @"SBFloatyFolderView");
+    LGDebugLog(@"folder open scroll diag reason=%@ scroll={%@} clip={%@} floaty={%@} host={%@} chain=%@",
+               reason ?: @"(unknown)",
+               LGFolderOpenViewSummary(scrollView),
+               LGFolderOpenViewSummary(clipView),
+               LGFolderOpenViewSummary(floatyView),
+               LGFolderOpenViewSummary(host),
+               LGFolderOpenAncestorChainSummary(scrollView));
+    if (host) LGFolderOpenLogHostState(host, reason ?: @"scroll");
+}
+
+static void LGFolderOpenNormalizeFloatyClipView(UIView *clipView, NSString *reason) {
+    if (!clipView || !LGFolderOpenEnabled()) return;
+    if (![NSStringFromClass(clipView.class) isEqualToString:@"SBFloatyFolderBackgroundClipView"]) return;
+    CGSize size = clipView.bounds.size;
+    if (size.width < 120.0 || size.height < 120.0) return;
+
+    CGFloat radius = LGFolderOpenCornerRadius();
+    BOOL changed = fabs(clipView.layer.cornerRadius - radius) > 0.25 ||
+        !clipView.clipsToBounds ||
+        !clipView.layer.masksToBounds;
+    clipView.clipsToBounds = YES;
+    clipView.layer.masksToBounds = YES;
+    clipView.layer.cornerRadius = radius;
+    if (@available(iOS 13.0, *)) clipView.layer.cornerCurve = kCACornerCurveContinuous;
+
+    if (changed) {
+        LGDebugLog(@"folder open clip normalized reason=%@ clip={%@}",
+                   reason ?: @"(unknown)",
+                   LGFolderOpenViewSummary(clipView));
+    }
+}
+
 static void LGRestoreFolderOpenHost(UIView *view) {
     LGRemoveAssociatedSubview(view, kFolderOpenTintKey);
 
@@ -286,6 +463,7 @@ static void injectIntoOpenFolder(UIView *host) {
         ensureFolderOpenTintOverlay(host);
         LGScheduleFolderOpenResanitize(host);
         [glass updateOrigin];
+        LGFolderOpenLogHostState(host, @"rate-limited-update");
         return;
     }
 
@@ -344,6 +522,7 @@ static void injectIntoOpenFolder(UIView *host) {
         LGDisplayLinkStateDidChangeActivity(&sFolderDisplayLinkState);
     }
     startFolderDisplayLink();
+    LGFolderOpenLogHostState(host, hadGlass ? @"inject-update" : @"inject-create");
 }
 
 static void LGFolderOpenForEachMaterialHost(void (^block)(UIView *view)) {
@@ -403,6 +582,7 @@ static void LGHandleFolderOpenMaterialView(UIView *view, BOOL updateOnly) {
     LGStripFolderOpenMaterialFiltersIfNeeded(view);
     [glass updateOrigin];
     LGScheduleFolderOpenResanitize(view);
+    LGFolderOpenLogHostState(view, @"material-layout");
 }
 
 static void LGFolderOpenRefreshAllHosts(void) {
@@ -442,6 +622,49 @@ static void LGFolderOpenPrefsChanged(CFNotificationCenterRef center,
     %orig;
     UIView *self_ = (UIView *)self;
     LGHandleFolderOpenMaterialView(self_, YES);
+}
+
+%end
+
+%hook SBFloatyFolderBackgroundClipView
+
+- (void)didMoveToWindow {
+    %orig;
+    LGFolderOpenNormalizeFloatyClipView((UIView *)self, @"clip-window");
+}
+
+- (void)layoutSubviews {
+    %orig;
+    LGFolderOpenNormalizeFloatyClipView((UIView *)self, @"clip-layout");
+}
+
+%end
+
+%hook UIScrollView
+
+- (void)setContentOffset:(CGPoint)contentOffset {
+    %orig;
+    UIView *self_ = (UIView *)self;
+    if (!isInsideOpenFolder(self_) && !LGIsInsideFloatyOpenFolder(self_)) return;
+    LGFolderOpenNormalizeFloatyClipView(LGFolderOpenNearestAncestorClassNamed(self_, @"SBFloatyFolderBackgroundClipView"),
+                                        @"scroll-content-offset");
+    UIView *container = folderOpenContainerForView(self_);
+    UIView *host = LGPrimaryFolderOpenHostForContainer(container);
+    if (host) LGFolderOpenLogHostState(host, @"scroll-content-offset");
+    LGFolderOpenLogScrollState((UIScrollView *)self_, @"scroll-content-offset");
+}
+
+- (void)setContentOffset:(CGPoint)contentOffset animated:(BOOL)animated {
+    %orig;
+    UIView *self_ = (UIView *)self;
+    if (!isInsideOpenFolder(self_) && !LGIsInsideFloatyOpenFolder(self_)) return;
+    NSString *reason = animated ? @"scroll-content-offset-animated" : @"scroll-content-offset";
+    LGFolderOpenNormalizeFloatyClipView(LGFolderOpenNearestAncestorClassNamed(self_, @"SBFloatyFolderBackgroundClipView"),
+                                        reason);
+    UIView *container = folderOpenContainerForView(self_);
+    UIView *host = LGPrimaryFolderOpenHostForContainer(container);
+    if (host) LGFolderOpenLogHostState(host, reason);
+    LGFolderOpenLogScrollState((UIScrollView *)self_, reason);
 }
 
 %end

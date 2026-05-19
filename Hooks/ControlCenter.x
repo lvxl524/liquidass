@@ -184,7 +184,14 @@ static BOOL LGIsControlCenterFullscreenMaterialView(UIView *view) {
         return NO;
     }
     CGRect screenBounds = UIScreen.mainScreen.bounds;
-    CGRect screenFrame = [view convertRect:view.bounds toView:nil];
+    CGRect screenFrame = CGRectZero;
+    if (@available(iOS 13.0, *)) {
+        id<UICoordinateSpace> space = UIScreen.mainScreen.coordinateSpace;
+        if (space && !CGRectIsEmpty(space.bounds)) screenBounds = space.bounds;
+        screenFrame = [view convertRect:view.bounds toCoordinateSpace:UIScreen.mainScreen.coordinateSpace];
+    } else {
+        screenFrame = [view convertRect:view.bounds toView:nil];
+    }
     CGFloat viewArea = CGRectGetWidth(screenFrame) * CGRectGetHeight(screenFrame);
     CGFloat screenArea = CGRectGetWidth(screenBounds) * CGRectGetHeight(screenBounds);
     return viewArea >= screenArea * 0.45;
