@@ -62,6 +62,7 @@ void     LGInvalidateLockscreenSnapshotCache(void);
 @property (nonatomic, strong) UIImage *shapeMaskImage;
 @property (nonatomic, assign) CGSize wallpaperSamplingResolution;
 @property (nonatomic, assign) BOOL releasesWallpaperAfterUpload;
+@property (nonatomic, assign) BOOL usesModelLayerVisualMetrics;
 @property (nonatomic, assign) LGUpdateGroup updateGroup;
 
 - (instancetype)initWithFrame:(CGRect)frame wallpaper:(UIImage *)wallpaper wallpaperOrigin:(CGPoint)origin;

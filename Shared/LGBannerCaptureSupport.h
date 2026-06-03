@@ -5,6 +5,7 @@
 @class LiquidGlassView;
 
 void LGRemoveLiveBackdropCaptureView(UIView *host, const void *associationKey);
+void LGSetLiveBackdropCaptureUsesModelGeometry(UIView *host, BOOL usesModelGeometry);
 BOOL LGCaptureLiveBackdropTextureForHost(UIView *host,
                                          LiquidGlassView *glass,
                                          const void *associationKey,

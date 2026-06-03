@@ -1,9 +1,11 @@
 #import "LGLiquidGlassRuntime.h"
+#import "../Shared/LGBackButtonSupport.h"
 #import "../Shared/LGSharedSupport.h"
 #import <CoreLocation/CoreLocation.h>
 #import <CoreMotion/CoreMotion.h>
 #import <CoreVideo/CoreVideo.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+#import <objc/runtime.h>
 #include <stdatomic.h>
 
 typedef struct {
@@ -40,6 +42,9 @@ static CFTimeInterval sSpecularMotionLastSampleTime = 0.0;
 static CFTimeInterval sSpecularMotionLastRedraw = 0.0;
 static CFTimeInterval sSpecularMotionLastDebugLog = 0.0;
 static CFTimeInterval sSpecularMotionLastDrawDebugLog = 0.0;
+static void *kLGStockBlurOriginalFiltersKey = &kLGStockBlurOriginalFiltersKey;
+static void *kLGStockBlurOriginalBackgroundFiltersKey = &kLGStockBlurOriginalBackgroundFiltersKey;
+static void *kLGStockBlurSuppressedKey = &kLGStockBlurSuppressedKey;
 
 @interface LGSpecularHeadingDelegate : NSObject <CLLocationManagerDelegate>
 @end
@@ -89,6 +94,56 @@ static CGFloat LGSpecularMotionSensitivity(void) {
 
 static CGFloat LGSpecularMotionCurrentAngle(void) {
     return LGSpecularMotionEnabled() ? sSpecularMotionAngle : 0.0;
+}
+
+
+static void LGStockBlurSetLayerBackgroundFilters(CALayer *layer, id filters) {
+    @try {
+        [layer setValue:filters forKey:@"backgroundFilters"];
+    } @catch (__unused NSException *exception) {
+    }
+}
+
+static id LGStockBlurGetLayerBackgroundFilters(CALayer *layer) {
+    @try {
+        return [layer valueForKey:@"backgroundFilters"];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static void LGStockBlurSuppressLayerTree(CALayer *layer, CALayer *excludedLayer, BOOL suppressed) {
+    if (!layer || layer == excludedLayer) return;
+
+    if (suppressed) {
+        if (!objc_getAssociatedObject(layer, kLGStockBlurSuppressedKey)) {
+            objc_setAssociatedObject(layer,
+                                     kLGStockBlurOriginalFiltersKey,
+                                     layer.filters ?: [NSNull null],
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            id backgroundFilters = LGStockBlurGetLayerBackgroundFilters(layer);
+            objc_setAssociatedObject(layer,
+                                     kLGStockBlurOriginalBackgroundFiltersKey,
+                                     backgroundFilters ?: [NSNull null],
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(layer, kLGStockBlurSuppressedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        layer.filters = nil;
+        LGStockBlurSetLayerBackgroundFilters(layer, nil);
+        layer.compositingFilter = nil;
+    } else if (objc_getAssociatedObject(layer, kLGStockBlurSuppressedKey)) {
+        id filters = objc_getAssociatedObject(layer, kLGStockBlurOriginalFiltersKey);
+        id backgroundFilters = objc_getAssociatedObject(layer, kLGStockBlurOriginalBackgroundFiltersKey);
+        layer.filters = (filters == [NSNull null]) ? nil : filters;
+        LGStockBlurSetLayerBackgroundFilters(layer, (backgroundFilters == [NSNull null]) ? nil : backgroundFilters);
+        objc_setAssociatedObject(layer, kLGStockBlurOriginalFiltersKey, nil, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(layer, kLGStockBlurOriginalBackgroundFiltersKey, nil, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(layer, kLGStockBlurSuppressedKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    }
+
+    for (CALayer *sublayer in layer.sublayers) {
+        LGStockBlurSuppressLayerTree(sublayer, excludedLayer, suppressed);
+    }
 }
 
 static void LGSpecularMotionStop(void) {
@@ -237,8 +292,6 @@ static void LGSpecularMotionInit(void) {
 }
 
 static float LG_samplingOrientationForGlassView(__unused UIView *view, __unused LGUpdateGroup group) {
-    // Visual rects are already converted into UIScreen.coordinateSpace. Sampling in
-    // the same coordinate space avoids the old iPad-only double rotation path.
     return 1.0f;
 }
 
@@ -534,12 +587,19 @@ void LGPrewarmPipelines(void) {
     float _cachedVisualScale;
     BOOL _hasCachedVisualMetrics;
     BOOL _drawScheduled;
+    BOOL _usesModelLayerVisualMetrics;
     CGFloat _effectiveTextureScale;
     CGSize _lastLayoutBounds;
     CFTimeInterval _lastDrawSubmissionTime;
     UIImage *_shapeMaskImage;
     id<MTLTexture> _shapeMaskTexture;
     LGZeroCopyBridge *_shapeMaskBridge;
+    BOOL _systemBlurFallbackEnabled;
+    UIView *_systemBlurFallbackView;
+    UIImageView *_systemBlurFallbackMaskView;
+    __weak UIView *_stockBlurSuppressionHost;
+    __weak UIView *_appliedStockBlurSuppressionHost;
+    BOOL _stockBlurSuppressionApplied;
     LGZeroCopyBridge *_wallpaperTextureBridge;
     BOOL _usesExternalWallpaperTexture;
     BOOL _usesFixedScreenSampling;
@@ -562,6 +622,7 @@ void LGPrewarmPipelines(void) {
     _blur = 8;
     _wallpaperScale = 1.0;
     _wallpaperSamplingResolution = CGSizeZero;
+    _systemBlurFallbackEnabled = NO;
     _updateGroup = LGUpdateGroupAll;
     _wallpaperOriginPt = origin;
     _needsBlurBake = YES;
@@ -593,6 +654,45 @@ void LGPrewarmPipelines(void) {
     _usesFixedScreenSampling = LG_imageUsesFixedScreenSampling(wallpaper);
     _sourceCacheKey = [LGImageStableCacheKey(wallpaper) copy];
     return self;
+}
+
+
+- (void)_ensureSystemBlurFallbackView {
+    if (_systemBlurFallbackView) return;
+    _systemBlurFallbackView = LGMakeLowBlurFallbackView();
+    _systemBlurFallbackView.frame = self.bounds;
+    _systemBlurFallbackView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _systemBlurFallbackView.userInteractionEnabled = NO;
+    _systemBlurFallbackView.hidden = YES;
+    [self insertSubview:_systemBlurFallbackView belowSubview:_mtkView];
+}
+
+- (void)_syncSystemBlurFallbackMask {
+    if (!_systemBlurFallbackView) return;
+    if (!_shapeMaskImage) {
+        _systemBlurFallbackView.maskView = nil;
+        _systemBlurFallbackMaskView = nil;
+        return;
+    }
+    if (!_systemBlurFallbackMaskView) {
+        _systemBlurFallbackMaskView = [[UIImageView alloc] initWithFrame:_systemBlurFallbackView.bounds];
+        _systemBlurFallbackMaskView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        _systemBlurFallbackView.maskView = _systemBlurFallbackMaskView;
+    }
+    _systemBlurFallbackMaskView.frame = _systemBlurFallbackView.bounds;
+    _systemBlurFallbackMaskView.image = _shapeMaskImage;
+}
+
+- (void)_syncSystemBlurFallbackVisibility {
+    BOOL visible = NO;
+    if (!visible) {
+        if (_stockBlurSuppressionApplied && _appliedStockBlurSuppressionHost && _appliedStockBlurSuppressionHost != self) {
+            LGStockBlurSuppressLayerTree(_appliedStockBlurSuppressionHost.layer, self.layer, NO);
+        }
+        _appliedStockBlurSuppressionHost = nil;
+        _stockBlurSuppressionApplied = NO;
+    }
+    _systemBlurFallbackView.hidden = !visible;
 }
 
 - (UIImage *)shapeMaskImage {
@@ -679,8 +779,37 @@ void LGPrewarmPipelines(void) {
     if (_shapeMaskImage == image || [_shapeMaskImage isEqual:image]) return;
     _shapeMaskImage = image;
     [self _reloadShapeMaskTexture];
+    [self _syncSystemBlurFallbackMask];
     [self scheduleDraw];
 }
+
+- (void)setSystemBlurFallbackEnabled:(BOOL)enabled {
+    if (_systemBlurFallbackEnabled == enabled) return;
+    _systemBlurFallbackEnabled = enabled;
+    [self _syncSystemBlurFallbackVisibility];
+    [self scheduleDraw];
+}
+
+- (UIView *)stockBlurSuppressionHost {
+    return _stockBlurSuppressionHost;
+}
+
+- (void)setStockBlurSuppressionHost:(UIView *)host {
+    if (_stockBlurSuppressionHost == host) return;
+    UIView *oldHost = _stockBlurSuppressionHost;
+    if (oldHost && oldHost != self) {
+        LGStockBlurSuppressLayerTree(oldHost.layer, self.layer, NO);
+    }
+    if (_appliedStockBlurSuppressionHost && _appliedStockBlurSuppressionHost != oldHost && _appliedStockBlurSuppressionHost != self) {
+        LGStockBlurSuppressLayerTree(_appliedStockBlurSuppressionHost.layer, self.layer, NO);
+    }
+    _appliedStockBlurSuppressionHost = nil;
+    _stockBlurSuppressionApplied = NO;
+    _stockBlurSuppressionHost = host;
+    [self _syncSystemBlurFallbackVisibility];
+    [self scheduleDraw];
+}
+
 
 - (void)setWallpaperImage:(UIImage *)img {
     if (!_usesExternalWallpaperTexture && _wallpaperImage == img) return;
@@ -704,6 +833,17 @@ void LGPrewarmPipelines(void) {
         return;
     }
     _wallpaperOriginPt = origin;
+    [self scheduleDraw];
+}
+
+- (BOOL)usesModelLayerVisualMetrics {
+    return _usesModelLayerVisualMetrics;
+}
+
+- (void)setUsesModelLayerVisualMetrics:(BOOL)usesModelLayerVisualMetrics {
+    if (_usesModelLayerVisualMetrics == usesModelLayerVisualMetrics) return;
+    _usesModelLayerVisualMetrics = usesModelLayerVisualMetrics;
+    _hasCachedVisualMetrics = NO;
     [self scheduleDraw];
 }
 
@@ -782,6 +922,7 @@ void LGPrewarmPipelines(void) {
         if (!self->_mtkView.superview) return;
         if (self.hidden || self.alpha <= 0.01f || self.layer.opacity <= 0.01f) return;
         self->_lastDrawSubmissionTime = CACurrentMediaTime();
+        [self _syncSystemBlurFallbackVisibility];
         [self->_mtkView draw];
     };
     if (delay > 0.0) {
@@ -799,7 +940,26 @@ void LGPrewarmPipelines(void) {
                                       _updateGroup != LGUpdateGroupLockscreen &&
                                       _updateGroup != LGUpdateGroupFolderOpen &&
                                       self.window != nil);
-    if (useDirectScreenConversion) {
+    if (_usesModelLayerVisualMetrics) {
+        CGRect rectInSuperview = self.frame;
+        if (self.superview) {
+            CALayer *layer = self.layer;
+            CGSize size = layer.bounds.size;
+            CGPoint anchor = layer.anchorPoint;
+            CGPoint position = layer.position;
+            rectInSuperview = CGRectMake(position.x - size.width * anchor.x,
+                                         position.y - size.height * anchor.y,
+                                         size.width,
+                                         size.height);
+        }
+        CGRect screenRect = self.window.windowScene
+            ? [self.superview convertRect:rectInSuperview toCoordinateSpace:UIScreen.mainScreen.coordinateSpace]
+            : [self.superview convertRect:rectInSuperview toView:nil];
+        visualRect = CGRectMake(screenRect.origin.x * scale,
+                                screenRect.origin.y * scale,
+                                screenRect.size.width * scale,
+                                screenRect.size.height * scale);
+    } else if (useDirectScreenConversion) {
         CGRect screenRect = self.window.windowScene
             ? [self convertRect:self.bounds toCoordinateSpace:UIScreen.mainScreen.coordinateSpace]
             : [self convertRect:self.bounds toView:nil];
@@ -906,6 +1066,7 @@ void LGPrewarmPipelines(void) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+    [self _syncSystemBlurFallbackVisibility];
     CGFloat scale = UIScreen.mainScreen.scale;
     CGSize boundsSize = self.bounds.size;
     CGSize drawableSize = CGSizeMake(MAX(1.0, floor(boundsSize.width * scale)),
@@ -1082,6 +1243,7 @@ void LGPrewarmPipelines(void) {
     CFTimeInterval profileStart = 0.0;
     BOOL shouldProfile = (_updateGroup == LGUpdateGroupLockscreen);
     if (shouldProfile) profileStart = LGProfileBegin();
+    [self _syncSystemBlurFallbackVisibility];
     if (!_bgTexture && self.wallpaperImage) [self _reloadTexture];
     if (_bgTexture && !_blurredTexture) [self _ensureBlurTexture];
     if (!sPipeline || !_bgTexture || !_blurredTexture) {
@@ -1268,6 +1430,10 @@ void LGPrewarmPipelines(void) {
 }
 
 - (void)dealloc {
+    UIView *suppressionHost = _appliedStockBlurSuppressionHost ?: _stockBlurSuppressionHost ?: self.superview;
+    if (_stockBlurSuppressionApplied && suppressionHost && suppressionHost != self) {
+        LGStockBlurSuppressLayerTree(suppressionHost.layer, self.layer, NO);
+    }
     if (_updateGroup != LGUpdateGroupAll)
         LG_unregisterGlassView(self, _updateGroup);
 }

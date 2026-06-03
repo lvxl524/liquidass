@@ -1290,7 +1290,7 @@ static NSInteger LGClockActiveDisplayFPS(void) {
 }
 
 static NSInteger LGClockIdleDisplayFPS(void) {
-    return LGClockActiveDisplayFPS();
+    return 1;
 }
 
 static void LGClockSetDisplayFPS(NSInteger fps) {
@@ -1733,6 +1733,11 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
     }
 }
 
+- (void)lg_refreshGlassOriginIfNeeded {
+    [self lg_updateWallpaperSourceIfNeeded];
+    [self.glassView updateOrigin];
+}
+
 - (BOOL)lg_rect:(CGRect)a differsFromRect:(CGRect)b {
     return fabs(CGRectGetMinX(a) - CGRectGetMinX(b)) > 0.5 ||
            fabs(CGRectGetMinY(a) - CGRectGetMinY(b)) > 0.5 ||
@@ -2011,9 +2016,7 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
     [super layoutSubviews];
     self.glassView.frame = self.bounds;
     self.tintView.frame = self.bounds;
-    self.glassView.wallpaperImage = LGClockWallpaperSource();
-    self.glassView.wallpaperOrigin = LG_getLockscreenWallpaperOrigin();
-    [self.glassView updateOrigin];
+    [self lg_refreshGlassOriginIfNeeded];
     [self lg_updateMask];
     LGProfileEnd(@"clock.layout", profileStart);
 }
@@ -2159,8 +2162,7 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
             CFTimeInterval idleProfileStart = LGProfileBegin();
             if (self.lastIdleDynamicCheckTimestamp > 0.0 &&
                 (now - self.lastIdleDynamicCheckTimestamp) < 0.25) {
-                [self lg_updateWallpaperSourceIfNeeded];
-                [self.glassView updateOrigin];
+                [self lg_refreshGlassOriginIfNeeded];
                 if (now >= sClockActiveFPSUntil) {
                     LGClockSetDisplayFPS(LGClockIdleDisplayFPS());
                 }
@@ -2181,8 +2183,7 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
             if (safelyClearOfNotifications) {
                 if (self.lastRelaxedDynamicCheckTimestamp > 0.0 &&
                     (now - self.lastRelaxedDynamicCheckTimestamp) < 0.12) {
-                    [self lg_updateWallpaperSourceIfNeeded];
-                    [self.glassView updateOrigin];
+                    [self lg_refreshGlassOriginIfNeeded];
                     if (now >= sClockActiveFPSUntil) {
                         LGClockSetDisplayFPS(LGClockIdleDisplayFPS());
                     }
@@ -2263,14 +2264,12 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
                 self.glassView.frame = self.bounds;
                 self.tintView.frame = self.bounds;
             }
-            [self lg_updateWallpaperSourceIfNeeded];
-            [self.glassView updateOrigin];
+            [self lg_refreshGlassOriginIfNeeded];
             LGProfileEnd(@"clock.modern_active_retract", activeProfileStart);
             LGProfileEnd(@"clock.displaylink", tickProfileStart);
             return;
         }
-        [self lg_updateWallpaperSourceIfNeeded];
-        [self.glassView updateOrigin];
+        [self lg_refreshGlassOriginIfNeeded];
         if (CACurrentMediaTime() >= sClockActiveFPSUntil) {
             LGClockSetDisplayFPS(LGClockIdleDisplayFPS());
         }
@@ -2293,9 +2292,7 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
         LGProfileEnd(@"clock.displaylink", tickProfileStart);
         return;
     }
-    self.glassView.wallpaperImage = LGClockWallpaperSource();
-    self.glassView.wallpaperOrigin = LG_getLockscreenWallpaperOrigin();
-    [self.glassView updateOrigin];
+    [self lg_refreshGlassOriginIfNeeded];
     LGProfileEnd(@"clock.displaylink", tickProfileStart);
 }
 
@@ -2360,9 +2357,7 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
     if (sourceLabel) {
         [overlay syncFromSourceLabel:sourceLabel];
     } else {
-        overlay.glassView.wallpaperImage = LGClockWallpaperSource();
-        overlay.glassView.wallpaperOrigin = LG_getLockscreenWallpaperOrigin();
-        [overlay.glassView updateOrigin];
+        [overlay lg_refreshGlassOriginIfNeeded];
         [overlay setNeedsLayout];
     }
 }

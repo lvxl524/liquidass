@@ -92,54 +92,65 @@ UIView *LGMakeLowBlurFallbackView(void) {
     return [[LGLowBlurFallbackView alloc] initWithFrame:CGRectZero];
 }
 
-static id LGClampedLowBlurValue(id value) {
+static id LGClampedLowBlurValue(id value, CGFloat radius) {
     if (![value respondsToSelector:@selector(doubleValue)]) return value;
     CGFloat numericValue = [value doubleValue];
-    if (numericValue <= kLGLowFallbackBlurRadius) return value;
-    return @(kLGLowFallbackBlurRadius);
+    if (numericValue <= radius) return value;
+    return @(radius);
 }
 
-static void LGClampLowBlurOnObject(id object) {
-    if (!object) return;
+static NSUInteger LGClampLowBlurOnObject(id object, CGFloat radius) {
+    if (!object) return 0;
+    NSUInteger changedCount = 0;
     NSArray<NSString *> *candidateKeys = @[@"inputRadius", @"radius", @"inputBlurRadius", @"blurRadius"];
     for (NSString *key in candidateKeys) {
         @try {
             id value = [object valueForKey:key];
-            id clamped = LGClampedLowBlurValue(value);
+            id clamped = LGClampedLowBlurValue(value, radius);
             if (clamped != value) {
                 [object setValue:clamped forKey:key];
+                changedCount++;
             }
         } @catch (NSException *exception) {
             LGDebugLog(@"low blur clamp failed key=%@ %@ %@", key, exception.name, exception.reason);
         }
     }
+    return changedCount;
 }
 
-static void LGClampLowBlurFilterArray(id filters) {
-    if (![filters respondsToSelector:@selector(count)]) return;
+static NSUInteger LGClampLowBlurFilterArray(id filters, CGFloat radius) {
+    if (![filters respondsToSelector:@selector(count)]) return 0;
+    NSUInteger changedCount = 0;
     for (id filter in filters) {
-        LGClampLowBlurOnObject(filter);
+        changedCount += LGClampLowBlurOnObject(filter, radius);
     }
+    return changedCount;
 }
 
-static void LGApplyLowBlurRadiusToLayer(CALayer *layer) {
-    if (!layer) return;
-    LGClampLowBlurFilterArray(layer.filters);
+static NSUInteger LGApplyLowBlurRadiusToLayer(CALayer *layer, CGFloat radius) {
+    if (!layer) return 0;
+    NSUInteger changedCount = LGClampLowBlurFilterArray(layer.filters, radius);
     @try {
-        LGClampLowBlurFilterArray([layer valueForKey:@"backgroundFilters"]);
+        changedCount += LGClampLowBlurFilterArray([layer valueForKey:@"backgroundFilters"], radius);
     } @catch (NSException *exception) {
         LGDebugLog(@"low blur background filter read failed %@ %@", exception.name, exception.reason);
     }
     for (CALayer *sublayer in layer.sublayers) {
-        LGApplyLowBlurRadiusToLayer(sublayer);
+        changedCount += LGApplyLowBlurRadiusToLayer(sublayer, radius);
     }
+    return changedCount;
+}
+
+void LGApplyLowBlurRadiusToViewWithRadius(UIView *view, CGFloat radius) {
+    if (!view) return;
+    CGFloat clampedRadius = fmax(0.0, radius);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        LGApplyLowBlurRadiusToLayer(view.layer, clampedRadius);
+    });
 }
 
 void LGApplyLowBlurRadiusToView(UIView *view) {
-    if (!view) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        LGApplyLowBlurRadiusToLayer(view.layer);
-    });
+    LGApplyLowBlurRadiusToViewWithRadius(view, kLGLowFallbackBlurRadius);
 }
 
 static UIImage *LGCaptureBackButtonFallbackImage(UIView *captureView, CGRect captureRect, BOOL afterScreenUpdates) {

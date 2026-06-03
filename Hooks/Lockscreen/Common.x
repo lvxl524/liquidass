@@ -113,7 +113,8 @@ static void LGStartLockDisplayLink(void) {
             : LGPreferredFramesPerSecondForKey(@"Lockscreen.FPS", 1);
         LGSetDisplayLinkStatePreferredFPS(&sLockDisplayLinkState, nextFPS);
         if (LG_prefersLiveCapture(@"Lockscreen.RenderingMode") ||
-            LG_prefersLiveCapture(@"LockscreenQuickActions.RenderingMode")) {
+            LG_prefersLiveCapture(@"LockscreenQuickActions.RenderingMode") ||
+            LG_prefersLiveCapture(@"Lockscreen.Passcode.RenderingMode")) {
             LGLockscreenRefreshAttachedHosts();
         } else {
             LG_updateRegisteredGlassViews(LGUpdateGroupLockscreen);
@@ -448,7 +449,6 @@ static void LGLockscreenInjectGlassWithImageAndSettingsForMode(UIView *host,
                                                                lightTintAlpha,
                                                                darkTintAlpha);
     if (!glass) return;
-
     UIView *renderingHost = (quickActionsHost && [host isKindOfClass:[UIVisualEffectView class]])
         ? host
         : (container ?: host);

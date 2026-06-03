@@ -55,6 +55,7 @@ void LGLog(NSString *format, ...);
 void LGDebugLog(NSString *format, ...);
 void LGAssertMainThread(void);
 BOOL LGProfilingEnabled(void);
+void LGStartAllDayProfilingSession(NSString *version, NSString *buildTimestamp);
 CFTimeInterval LGProfileBegin(void);
 void LGProfileEnd(NSString *key, CFTimeInterval startTime);
 

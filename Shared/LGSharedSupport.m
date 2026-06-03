@@ -1,8 +1,10 @@
 #import "LGSharedSupport.h"
 #import "LGMetalShaderSource.h"
+#import <mach/mach.h>
 #import <objc/runtime.h>
 #import <os/lock.h>
 #import <stdlib.h>
+#import <unistd.h>
 
 NSString * const LGPrefsDomain = @"dylv.liquidassprefs";
 CFStringRef const LGPrefsChangedNotification = CFSTR("dylv.liquidassprefs/Reload");
@@ -44,10 +46,17 @@ static os_unfair_lock sLGProfileLock = OS_UNFAIR_LOCK_INIT;
 static NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, NSNumber *> *> *sLGProfileStats = nil;
 static NSMutableDictionary<NSString *, NSNumber *> *sLGPendingDynamicDefaultWrites = nil;
 static BOOL sLGDynamicDefaultFlushScheduled = NO;
+static BOOL sLGAllDayProfilingSessionStarted = NO;
+static dispatch_source_t sLGAllDayProfilingTimer = nil;
 static CFTimeInterval sLGProfileWindowStart = 0.0;
+static CFTimeInterval sLGLastAllDayProfilerHeartbeat = 0.0;
 static const CFTimeInterval kLGProfileFlushInterval = 2.0;
+static const CFTimeInterval kLGAllDayProfileFlushInterval = 60.0;
+static const CFTimeInterval kLGAllDayHeartbeatInterval = 300.0;
 static const CFTimeInterval kLGDynamicDefaultFlushDelay = 0.25;
 static const unsigned long long kLGLogMaxFileSize = 10ULL * 1024ULL * 1024ULL;
+
+static NSDictionary<NSString *, id> *LGCopyPreferencesDictionary(void);
 
 static void LGCloseLogHandle(void) {
     if (!sLGLogHandle) return;
@@ -78,11 +87,168 @@ static NSString *LGLogFilePath(void) {
     return sPath;
 }
 
+static NSString *LGProfilingLogFilePath(void) {
+    return @"/tmp/LiquidAss-profiling.log";
+}
+
 static dispatch_queue_t LGPrefsWriteQueue(void) {
     dispatch_once(&sLGPrefsWriteQueueOnce, ^{
         sLGPrefsWriteQueue = dispatch_queue_create("dylv.liquidass.prefswrite", DISPATCH_QUEUE_SERIAL);
     });
     return sLGPrefsWriteQueue;
+}
+
+static void LGAppendProfilingLogLine(NSString *line) {
+    if (!line.length) return;
+    NSString *path = LGProfilingLogFilePath();
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+    if (!path.length || !data.length) return;
+
+    static dispatch_queue_t sLGProfilingLogQueue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sLGProfilingLogQueue = dispatch_queue_create("dylv.liquidass.profilinglog", DISPATCH_QUEUE_SERIAL);
+    });
+
+    dispatch_async(sLGProfilingLogQueue, ^{
+        NSFileManager *fm = [NSFileManager defaultManager];
+        if (![fm fileExistsAtPath:path]) {
+            [NSData.data writeToFile:path atomically:YES];
+        }
+
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (!handle) return;
+        @try {
+            [handle seekToEndOfFile];
+            [handle writeData:data];
+            [handle closeFile];
+        } @catch (__unused NSException *exception) {
+            @try { [handle closeFile]; } @catch (__unused NSException *closeException) {}
+        }
+    });
+}
+
+static id LGProfilingJSONObject(id object) {
+    if (!object) return @"null";
+    if ([object isKindOfClass:[NSString class]] || [object isKindOfClass:[NSNumber class]] || object == NSNull.null) {
+        return object;
+    }
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+        [(NSDictionary *)object enumerateKeysAndObjectsUsingBlock:^(id key, id value, __unused BOOL *stop) {
+            NSString *stringKey = [key isKindOfClass:[NSString class]] ? key : [[key description] copy];
+            if (stringKey.length) dictionary[stringKey] = LGProfilingJSONObject(value);
+        }];
+        return dictionary;
+    }
+    if ([object isKindOfClass:[NSArray class]]) {
+        NSMutableArray *array = [NSMutableArray array];
+        for (id value in (NSArray *)object) {
+            [array addObject:LGProfilingJSONObject(value)];
+        }
+        return array;
+    }
+    if ([object isKindOfClass:[NSDate class]]) {
+        return [(NSDate *)object description];
+    }
+    return [object description] ?: @"";
+}
+
+static NSString *LGProfilingJSONStringForObject(id object) {
+    id jsonObject = LGProfilingJSONObject(object);
+    NSData *data = [NSJSONSerialization dataWithJSONObject:jsonObject
+                                                   options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys
+                                                     error:nil];
+    if (!data.length) return [jsonObject description] ?: @"";
+    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+}
+
+static uint64_t LGCurrentResidentMemoryBytes(void) {
+    mach_task_basic_info_data_t info = {0};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    kern_return_t result = task_info(mach_task_self(),
+                                     MACH_TASK_BASIC_INFO,
+                                     (task_info_t)&info,
+                                     &count);
+    if (result != KERN_SUCCESS) return 0;
+    return (uint64_t)info.resident_size;
+}
+
+static NSString *LGThermalStateString(NSProcessInfoThermalState state) {
+    switch (state) {
+        case NSProcessInfoThermalStateNominal: return @"nominal";
+        case NSProcessInfoThermalStateFair: return @"fair";
+        case NSProcessInfoThermalStateSerious: return @"serious";
+        case NSProcessInfoThermalStateCritical: return @"critical";
+        default: return [NSString stringWithFormat:@"unknown(%ld)", (long)state];
+    }
+}
+
+static BOOL LGAllDayProfilingEnabled(void) {
+    return LG_prefBool(@"AllDayProfiling.Enabled", NO);
+}
+
+static void LGAppendAllDayProfilerHeartbeat(NSString *reason) {
+    if (!LGAllDayProfilingEnabled()) return;
+    CFTimeInterval now = CACurrentMediaTime();
+    if ([reason isEqualToString:@"thermal-change"] && now - sLGLastAllDayProfilerHeartbeat < 5.0) return;
+    sLGLastAllDayProfilerHeartbeat = now;
+
+    UIDevice *device = UIDevice.currentDevice;
+    device.batteryMonitoringEnabled = YES;
+    CGFloat batteryPercent = device.batteryLevel >= 0.0f ? device.batteryLevel * 100.0f : -1.0f;
+    uint64_t residentBytes = LGCurrentResidentMemoryBytes();
+    LGAppendProfilingLogLine([NSString stringWithFormat:
+        @"[LiquidAssProfiler] heartbeat date=%@ reason=%@ uptime=%.1fs resident=%.1fMB thermal=%@ battery=%.0f%% batteryState=%ld appState=%ld\n",
+        [NSDate date],
+        reason ?: @"timer",
+        NSProcessInfo.processInfo.systemUptime,
+        (double)residentBytes / (1024.0 * 1024.0),
+        LGThermalStateString(NSProcessInfo.processInfo.thermalState),
+        batteryPercent,
+        (long)device.batteryState,
+        (long)UIApplication.sharedApplication.applicationState]);
+}
+
+void LGStartAllDayProfilingSession(NSString *version, NSString *buildTimestamp) {
+    if (sLGAllDayProfilingSessionStarted || !LGAllDayProfilingEnabled()) return;
+    sLGAllDayProfilingSessionStarted = YES;
+
+    NSString *processName = NSProcessInfo.processInfo.processName ?: @"unknown";
+    NSString *osVersion = NSProcessInfo.processInfo.operatingSystemVersionString ?: @"unknown";
+    NSDictionary<NSString *, id> *preferences = LGCopyPreferencesDictionary();
+    NSString *preferencesJSON = LGProfilingJSONStringForObject(preferences);
+    LGAppendProfilingLogLine([NSString stringWithFormat:
+        @"\n[LiquidAssProfiler] session-start date=%@ pid=%d process=%@ version=%@ built=%@ uptime=%.1fs os=%@\n",
+        [NSDate date],
+        getpid(),
+        processName,
+        version ?: @"unknown",
+        buildTimestamp ?: @"unknown",
+        NSProcessInfo.processInfo.systemUptime,
+        osVersion]);
+    LGAppendProfilingLogLine(@"[LiquidAssProfiler] preferences-begin\n");
+    LGAppendProfilingLogLine([preferencesJSON stringByAppendingString:@"\n"]);
+    LGAppendProfilingLogLine(@"[LiquidAssProfiler] preferences-end\n");
+    LGAppendAllDayProfilerHeartbeat(@"session-start");
+
+    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+    sLGAllDayProfilingTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+    dispatch_source_set_timer(sLGAllDayProfilingTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kLGAllDayHeartbeatInterval * NSEC_PER_SEC)),
+                              (uint64_t)(kLGAllDayHeartbeatInterval * NSEC_PER_SEC),
+                              (uint64_t)(10.0 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(sLGAllDayProfilingTimer, ^{
+        LGAppendAllDayProfilerHeartbeat(@"timer");
+    });
+    dispatch_resume(sLGAllDayProfilingTimer);
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSProcessInfoThermalStateDidChangeNotification
+                                                      object:NSProcessInfo.processInfo
+                                                       queue:nil
+                                                  usingBlock:^(__unused NSNotification *note) {
+        LGAppendAllDayProfilerHeartbeat(@"thermal-change");
+    }];
 }
 
 static void LGTrimLogFileIfNeeded(NSString *path, NSUInteger incomingLength) {
@@ -420,7 +586,7 @@ void LGAssertMainThread(void) {
 }
 
 BOOL LGProfilingEnabled(void) {
-    return LG_prefBool(@"DebugProfiling.Enabled", NO);
+    return LG_prefBool(@"DebugProfiling.Enabled", NO) || LGAllDayProfilingEnabled();
 }
 
 CFTimeInterval LGProfileBegin(void) {
@@ -431,6 +597,9 @@ CFTimeInterval LGProfileBegin(void) {
 void LGProfileEnd(NSString *key, CFTimeInterval startTime) {
     if (startTime <= 0.0 || !key.length || !LGProfilingEnabled()) return;
 
+    BOOL debugProfiling = LG_prefBool(@"DebugProfiling.Enabled", NO);
+    BOOL allDayProfiling = LGAllDayProfilingEnabled();
+    CFTimeInterval flushInterval = allDayProfiling ? kLGAllDayProfileFlushInterval : kLGProfileFlushInterval;
     CFTimeInterval now = CACurrentMediaTime();
     CFTimeInterval elapsed = now - startTime;
     if (elapsed < 0.0) elapsed = 0.0;
@@ -460,7 +629,7 @@ void LGProfileEnd(NSString *key, CFTimeInterval startTime) {
     bucket[@"max"] = @(maxValue);
 
     windowDuration = now - sLGProfileWindowStart;
-    if (windowDuration >= kLGProfileFlushInterval && sLGProfileStats.count > 0) {
+    if (windowDuration >= flushInterval && sLGProfileStats.count > 0) {
         snapshot = [sLGProfileStats copy];
         [sLGProfileStats removeAllObjects];
         sLGProfileWindowStart = now;
@@ -489,7 +658,17 @@ void LGProfileEnd(NSString *key, CFTimeInterval startTime) {
                           cps,
                           totalMs]];
     }
-    LGLog(@"profile window=%.2fs %@", windowDuration, [parts componentsJoinedByString:@" | "]);
+    NSString *summary = [parts componentsJoinedByString:@" | "];
+    if (debugProfiling) {
+        LGLog(@"profile window=%.2fs %@", windowDuration, summary);
+    }
+    if (allDayProfiling) {
+        LGAppendProfilingLogLine([NSString stringWithFormat:
+            @"[LiquidAssProfiler] profile date=%@ window=%.2fs %@\n",
+            [NSDate date],
+            windowDuration,
+            summary]);
+    }
 }
 
 CGColorSpaceRef LGSharedRGBColorSpace(void) {

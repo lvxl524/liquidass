@@ -6,6 +6,7 @@
 
 UIView *LGBackButtonPreferredContainerView(UIView *view);
 void LGApplyLowBlurRadiusToView(UIView *view);
+void LGApplyLowBlurRadiusToViewWithRadius(UIView *view, CGFloat radius);
 UIView *LGMakeLowBlurFallbackView(void);
 
 @interface LGSharedBackButtonView : UIView

@@ -6,6 +6,7 @@
 #import <objc/runtime.h>
 #import <errno.h>
 #import <fcntl.h>
+#import <spawn.h>
 #import <signal.h>
 #import <string.h>
 #import <unistd.h>
@@ -30,6 +31,7 @@
 
 extern int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int buffersize);
 extern int proc_name(int pid, void *buffer, uint32_t buffersize);
+extern char **environ;
 
 static BOOL LG_isAtLeastiOS16(void);
 static CGSize LG_activeScreenSize(void);
@@ -1889,6 +1891,29 @@ static void LG_handleScreenGeometryChanged(void) {
     });
 }
 
+static void LGRunJetsamHelper(void) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        const char *paths[] = {
+            "/var/jb/usr/local/bin/LiquidAssJetsam",
+            "/usr/local/bin/LiquidAssJetsam",
+        };
+        for (NSUInteger i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            if (access(paths[i], X_OK) != 0) continue;
+
+            pid_t pid = 0;
+            char *const argv[] = { (char *)paths[i], NULL };
+            int result = posix_spawn(&pid, paths[i], NULL, NULL, argv, environ);
+            if (result == 0) {
+                LGDebugLog(@"jetsam helper spawned pid=%d path=%s", pid, paths[i]);
+            } else {
+                LGDebugLog(@"jetsam helper spawn failed path=%s errno=%d", paths[i], result);
+            }
+            return;
+        }
+        LGDebugLog(@"jetsam helper unavailable");
+    });
+}
+
 %ctor {
     if (!LGIsSpringBoardProcess()) return;
 
@@ -1897,6 +1922,8 @@ static void LG_handleScreenGeometryChanged(void) {
           LGMainBundleIdentifier() ?: @"(unknown)",
           LG_PACKAGE_VERSION,
           LG_BUILD_TIMESTAMP);
+    LGStartAllDayProfilingSession(LG_PACKAGE_VERSION, LG_BUILD_TIMESTAMP);
+    LGRunJetsamHelper();
     LGClearFlattenedWallpaperFilesOnLoad();
     LG_startDebugMainThreadStallProbe();
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{

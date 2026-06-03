@@ -40,6 +40,16 @@
 
 @end
 
+static void *kLGLiveCaptureUsesModelGeometryKey = &kLGLiveCaptureUsesModelGeometryKey;
+
+void LGSetLiveBackdropCaptureUsesModelGeometry(UIView *host, BOOL usesModelGeometry) {
+    if (!host) return;
+    objc_setAssociatedObject(host,
+                             kLGLiveCaptureUsesModelGeometryKey,
+                             usesModelGeometry ? @YES : nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static CGFloat LGLiveCaptureScaleForRect(CGRect captureRect, CGFloat screenScale) {
     CGFloat configuredScale = LG_prefFloat(@"LiveCapture.ScaleFactor", 0.35);
     CGFloat minimumScale = LG_prefFloat(@"LiveCapture.MinimumScale", 0.55);
@@ -86,8 +96,21 @@ BOOL LGCaptureLiveBackdropTextureForHost(UIView *host,
         return NO;
     }
 
-    CALayer *hostLayer = host.layer.presentationLayer ?: host.layer;
-    CGRect hostFrame = [hostLayer convertRect:hostLayer.bounds toLayer:superview.layer];
+    BOOL usesModelGeometry = [objc_getAssociatedObject(host, kLGLiveCaptureUsesModelGeometryKey) boolValue];
+    CGRect hostFrame = CGRectZero;
+    if (usesModelGeometry) {
+        CALayer *hostLayer = host.layer;
+        CGSize size = hostLayer.bounds.size;
+        CGPoint anchor = hostLayer.anchorPoint;
+        CGPoint position = hostLayer.position;
+        hostFrame = CGRectMake(position.x - size.width * anchor.x,
+                               position.y - size.height * anchor.y,
+                               size.width,
+                               size.height);
+    } else {
+        CALayer *hostLayer = host.layer.presentationLayer ?: host.layer;
+        hostFrame = [hostLayer convertRect:hostLayer.bounds toLayer:superview.layer];
+    }
     CGSize captureSize = hostFrame.size;
     CGPoint captureOrigin = hostFrame.origin;
     if (!isfinite(captureSize.width) || !isfinite(captureSize.height) ||

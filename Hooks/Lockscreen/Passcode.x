@@ -1,4 +1,5 @@
 #import "Common.h"
+#import "../../Shared/LGBannerCaptureSupport.h"
 #import "../../Shared/LGHookSupport.h"
 #import "../../Shared/LGPrefAccessors.h"
 #import <objc/runtime.h>
@@ -427,6 +428,7 @@ static void LGResetPasscodeButton(UIView *button) {
         LGSetPasscodeButtonAnimator(host, nil);
     }
     LGCleanupLockscreenHost(host);
+    LGSetLiveBackdropCaptureUsesModelGeometry(host, NO);
     LGRemoveAssociatedSubview(host, kLGPasscodeButtonTintKey);
     host.transform = CGAffineTransformIdentity;
     LGRestorePasscodeButtonBackgroundState(host);
@@ -465,12 +467,21 @@ static void LGInjectPasscodeButtonIfNeeded(UIView *button) {
             LGSetPasscodeButtonAnimator(previousHost, nil);
         }
         LGCleanupLockscreenHost(previousHost);
+        LGSetLiveBackdropCaptureUsesModelGeometry(previousHost, NO);
         LGRemoveAssociatedSubview(previousHost, kLGPasscodeButtonTintKey);
         previousHost.transform = CGAffineTransformIdentity;
         LGRestorePasscodeButtonBackgroundState(previousHost);
     }
 
     LGRememberPasscodeButtonBackgroundState(host);
+    BOOL passcodeUsesLiveCapture = LG_prefersLiveCapture(LGPasscodeRenderingModeKey());
+    if (!passcodeUsesLiveCapture && !LGGetLockscreenSnapshotCached()) {
+        LGDebugLog(@"passcode inject skipped no lockscreen snapshot host=%@", NSStringFromClass(host.class));
+        LGRestorePasscodeButtonBackgroundState(host);
+        LGProfileEnd(@"passcode.inject", profileStart);
+        return;
+    }
+
     host.backgroundColor = UIColor.clearColor;
     host.alpha = 1.0;
     host.opaque = NO;
@@ -479,6 +490,7 @@ static void LGInjectPasscodeButtonIfNeeded(UIView *button) {
     CGFloat cornerRadius = MIN(CGRectGetWidth(host.bounds), CGRectGetHeight(host.bounds)) * 0.5;
     host.layer.cornerRadius = cornerRadius;
     host.layer.cornerCurve = kCACornerCurveCircular;
+    LGSetLiveBackdropCaptureUsesModelGeometry(host, passcodeUsesLiveCapture);
     LGLockscreenInjectGlassWithSettingsAndModeForFeatureEnabled(host,
                                                                 LGPasscodeRenderingModeKey(),
                                                                 LGPasscodeEnabled(),
@@ -507,6 +519,7 @@ static void LGInjectPasscodeButtonIfNeeded(UIView *button) {
     LiquidGlassView *glass = LGPasscodeButtonGlassView(host);
     if (glass) {
         glass.shapeMaskImage = nil;
+        glass.usesModelLayerVisualMetrics = passcodeUsesLiveCapture;
     }
     BOOL alreadyInjected = previousHost == host && LGPasscodeButtonGlassView(host) && tint != nil;
     LGSetPasscodeStoredButtonHost(button, host);
@@ -537,6 +550,12 @@ static void LGInjectPasscodeButtonIfNeeded(UIView *button) {
                    glass.refractionScale);
     }
     LGAttachLockHostIfNeeded(host);
+    if (passcodeUsesLiveCapture && !alreadyInjected) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            LGInjectPasscodeButtonIfNeeded(button);
+        });
+    }
     LGProfileEnd(@"passcode.inject", profileStart);
 }
 

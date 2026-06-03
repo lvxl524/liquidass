@@ -23,6 +23,7 @@ $(TWEAK_NAME)_FRAMEWORKS = UIKit Metal MetalKit Accelerate CoreMotion CoreLocati
 include $(THEOS)/makefiles/tweak.mk
 SUBPROJECTS += LiquidAssPrefs
 SUBPROJECTS += LiquidAssRWB
+SUBPROJECTS += LiquidAssJetsam
 include $(THEOS_MAKE_PATH)/aggregate.mk
 
 .PHONY: sim remove release

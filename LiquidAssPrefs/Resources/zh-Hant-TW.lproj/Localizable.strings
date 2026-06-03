@@ -262,7 +262,10 @@
 "prefs.live_capture.maximum_pixels.title" = "最大像素";
 "prefs.live_capture.maximum_pixels.subtitle" = "每個即時擷取紋理的像素上限。";
 "prefs.live_capture.fps.subtitle" = "此介面的最大即時背景重新整理頻率。";
-"prefs.live_capture.control_center_blur_cap.title" = "控制中心模糊上限輔助";
+"prefs.control_center.live_capture_budget.title" = "Live Capture Budget";
+"prefs.control_center.live_capture_budget.subtitle" = "Control Center modules refreshed per tick. Higher values recover static modules faster but cost more CPU.";
+"prefs.control_center.fullscreen_backdrop_blur_radius.title" = "Fullscreen Blur Radius";
+"prefs.control_center.fullscreen_backdrop_blur_radius.subtitle" = "Caps the stock Control Center background material blur. Lower values make the fullscreen blur lighter.";
 
 "prefs.misc.display_link_toggle.subtitle" = "為使用 Display-Link 的介面顯示個別的控制項。";
 "prefs.misc.display_link_surface.subtitle" = "允許此介面執行由 Display-Link 驅動的玻璃更新。";
@@ -270,6 +273,8 @@
 "prefs.misc.debug_logging.subtitle" = "啟用寫入 /tmp/LiquidAss.log 的詳細診斷記錄";
 "prefs.misc.debug_profiling.title" = "除錯效能分析";
 "prefs.misc.debug_profiling.subtitle" = "記錄簡短的效能摘要。";
+"prefs.misc.all_day_profiling.title" = "All-Day Profiler";
+"prefs.misc.all_day_profiling.subtitle" = "Keeps /tmp/LiquidAss-profiling.log across SpringBoard launches with preferences, memory, thermal, battery, and profile summaries.";
 "prefs.misc.invalidate_caches.title" = "使快照快取失效";
 "prefs.misc.invalidate_caches.subtitle" = "清除已快取的快照，然後重新建立它們。";
 "prefs.misc.import_export_section.title" = "匯入/匯出設定";
