@@ -120,7 +120,7 @@
 "prefs.section.control_center.title" = "Пункт управления";
 "prefs.section.control_center.subtitle" = "Материалы модулей Пункта управления, оттенок, качество рендеринга и т. д.";
 "prefs.section.search_pill.title" = "Плашка поиска";
-"prefs.section.search_pill.subtitle" = "Материалы плашки поиска на экране "Домой", оттенок, качество рендеринга и т. д.";
+"prefs.section.search_pill.subtitle" = "Материалы плашки поиска на экране \"Домой\", оттенок, качество рендеринга и т. д.";
 "prefs.section.widgets.title" = "Виджеты";
 "prefs.section.widgets.subtitle" = "Материалы виджетов, оттенок, качество рендеринга и т. д.";
 "prefs.section.category_pods.title" = "Группы категорий";
@@ -132,7 +132,7 @@
 "prefs.section.experimental_rendering.title" = "Методы рендеринга";
 "prefs.section.experimental_rendering.subtitle" = "Выберите снимок экрана или живой захват для каждой поверхности. Это экспериментальная функция, которая может сильно нагружать систему. Не рекомендуется здесь что-либо менять.";
 "prefs.section.surface_tint_override.title" = "Переопределение оттенка поверхностей";
-"prefs.section.surface_tint_override.subtitle" = "Настройка режима оттенка для отдельных поверхностей. Вариант "По системе" использует текущее системное оформление.";
+"prefs.section.surface_tint_override.subtitle" = "Настройка режима оттенка для отдельных поверхностей. Вариант \"По системе\" использует текущее системное оформление.";
 "prefs.section.display_link_toggle.title" = "Ручной переключатель Display-Link";
 "prefs.section.display_link_toggle.subtitle" = "Выберите, каким поверхностям разрешено обновлять стеклянный эффект через Display-Link.";
 "prefs.section.motion_highlights.title" = "Блики при движении";
@@ -206,7 +206,7 @@
 "prefs.section.preferences.title" = "Настройки";
 "prefs.section.preferences.subtitle" = "Параметры, используемые этим интерфейсом настроек.";
 "prefs.misc.preferences_back_button.title" = "Кнопки навигации";
-"prefs.misc.preferences_back_button.subtitle" = "Использовать стекло для кнопок "Назад" и сброса в меню навигации.";
+"prefs.misc.preferences_back_button.subtitle" = "Использовать стекло для кнопок \"Назад\" и сброса в меню навигации.";
 "prefs.misc.preferences_go_to_top.title" = "Кнопка "Наверх"";
 "prefs.misc.preferences_go_to_top.subtitle" = "Использовать стекло для плавающей кнопки быстрого скролла вверх.";
 "prefs.misc.preferences_respring_bar.title" = "Панель респринга";
