@@ -123,7 +123,7 @@
 "prefs.section.search_pill.subtitle" = "Матеріали плашки пошуку на початковому екрані, відтінок, якість рендерингу тощо.";
 "prefs.section.widgets.title" = "Віджети";
 "prefs.section.widgets.subtitle" = "Матеріали віджетів, відтінок, якість рендерингу тощо.";
-"prefs.section.category_pods.title" = "Группы категорий";
+"prefs.section.category_pods.title" = "Групи категорій";
 "prefs.section.category_pods.subtitle" = "Якість рендерингу матеріалів для груп категорій тощо.";
 "prefs.section.search_field.title" = "Поле пошуку";
 "prefs.section.search_field.subtitle" = "Якість рендерингу матеріалів поля пошуку тощо.";
@@ -160,7 +160,7 @@
 "prefs.import_prefs.error_invalid" = "Буфер обміну не містить коректних даних налаштувань LiquidAss.";
 "prefs.import_prefs.error_empty" = "Дані налаштувань для імпорту порожні.";
 "prefs.import_prefs.error_read" = "Не вдалося прочитати вибраний файл налаштувань.";
-"prefs.import_prefs.success" = "Налаштування успешно імпортовано. Для застосування деяких змін усе ще може знадобитися респринг.";
+"prefs.import_prefs.success" = "Налаштування успішно імпортовано. Для застосування деяких змін усе ще може знадобитися респринг.";
 "prefs.export_prefs.error" = "Не вдалося створити файл експорту налаштувань.";
 "prefs.reopen_settings.title" = "Перевідкрити Параметри";
 "prefs.reopen_settings.body" = "Ця зміна набуде чинності при наступному запуску Параметрів. Перевідкрити Параметри просто зараз?";
@@ -235,7 +235,7 @@
 "prefs.live_capture.minimum_scale.subtitle" = "Мінімально допустимий масштаб захоплення після автоматичної зміни розміру.";
 "prefs.live_capture.maximum_scale.title" = "Максимальний масштаб";
 "prefs.live_capture.maximum_scale.subtitle" = "Максимально допустимий масштаб захоплення після автоматичної зміни розміру.";
-"prefs.live_capture.maximum_pixels.title" = "Максимум пикселів";
+"prefs.live_capture.maximum_pixels.title" = "Максимум пікселів";
 "prefs.live_capture.maximum_pixels.subtitle" = "Ліміт пікселів для кожної текстури захоплення наживо.";
 "prefs.live_capture.fps.subtitle" = "Максимальна частота оновлення живого фону для цієї поверхні.";
 "prefs.control_center.live_capture_budget.title" = "Бюджет захоплення наживо";
