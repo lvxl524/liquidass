@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: [main]
+    tags: ["*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -105,11 +106,20 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: checkout (for version info)
+        uses: actions/checkout@v4
+
+      - name: get package version
+        id: version
+        run: |
+          VER=$(sed -n 's/^Version: //p' control | head -n 1)
+          echo "version=$VER" >> $GITHUB_OUTPUT
+
       - name: download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -118,6 +128,7 @@ jobs:
           merge-multiple: true
 
       - name: update nightly release
+        if: github.ref == 'refs/heads/main'
         uses: ncipollo/release-action@v1
         with:
           artifacts: "./all-packages/*.deb"
@@ -126,11 +137,26 @@ jobs:
           name: "Nightly"
           body: |
             This build was automatically generated from the latest commit on `main`.
-            
+
+            **Version:** ${{ steps.version.outputs.version }}
             **Commit SHA:** ${{ github.sha }}
             **Triggered by:** @${{ github.actor }}
-            
+
             > [!NOTE]
             > A nightly build is basically the next update partially done. Additionally, this build might have the old version number but the code itself should has the latest commit.
           prerelease: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: create versioned release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "./all-packages/*.deb"
+          tag: ${{ github.ref_name }}
+          name: "${{ steps.version.outputs.version }}"
+          body: |
+            ## Liquid (Gl)ass v${{ steps.version.outputs.version }}
+
+            **Commit SHA:** ${{ github.sha }}
+            **Triggered by:** @${{ github.actor }}
           token: ${{ secrets.GITHUB_TOKEN }}

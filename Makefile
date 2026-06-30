@@ -54,11 +54,18 @@ sim:: all
 
 before-package::
 	@APP_NAME=$$(sed -n 's/^"prefs.app_name" = "\(.*\)";/\1/p' $(PWD)/LiquidAssPrefs/Resources/Localizable.strings | head -n 1); \
+	PKG_VERSION=$$(sed -n 's/^Version: //p' $(PWD)/control | head -n 1); \
 	if [ -f "$(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences/LiquidAssPrefs.plist" ]; then \
 		/usr/libexec/PlistBuddy -c "Set :entry:label $$APP_NAME" "$(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences/LiquidAssPrefs.plist"; \
 	fi; \
 	if [ -f "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/LiquidAssPrefs.bundle/entry.plist" ]; then \
 		/usr/libexec/PlistBuddy -c "Set :entry:label $$APP_NAME" "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/LiquidAssPrefs.bundle/entry.plist"; \
+	fi; \
+	if [ -d "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/LiquidAssPrefs.bundle" ]; then \
+		mkdir -p "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/LiquidAssPrefs.bundle/changelogs"; \
+		cp -v $(PWD)/changelogs/*.md "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/LiquidAssPrefs.bundle/changelogs/"; \
+		/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $$PKG_VERSION" "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/LiquidAssPrefs.bundle/Info.plist"; \
+		/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $$PKG_VERSION" "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/LiquidAssPrefs.bundle/Info.plist"; \
 	fi
 
 remove::
