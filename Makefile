@@ -17,7 +17,7 @@ SHARED_FILES := Shared/LGSharedSupport.m Shared/LGHookSupport.m Shared/LGBannerC
 RUNTIME_FILES := Runtime/LGLiquidGlassRuntime.m Runtime/LGSnapshotCaptureSupport.m
 PREF_CONTROL_FILES := LiquidAssPrefs/LGPrefsLiquidSlider.m LiquidAssPrefs/LGPrefsLiquidSwitch.m
 $(TWEAK_NAME)_FILES = Tweak.x $(HOOK_FILES) $(SHARED_FILES) $(RUNTIME_FILES) $(PREF_CONTROL_FILES)
-$(TWEAK_NAME)_CFLAGS = -fobjc-arc -fvisibility=default -DLG_PACKAGE_VERSION=@\"$(LG_PACKAGE_VERSION)\" -DLG_BUILD_TIMESTAMP=@\"$(LG_BUILD_TIMESTAMP)\"
+$(TWEAK_NAME)_CFLAGS = -fobjc-arc -fvisibility=default -Wno-gnu-folding-constant -DLG_PACKAGE_VERSION=@\"$(LG_PACKAGE_VERSION)\" -DLG_BUILD_TIMESTAMP=@\"$(LG_BUILD_TIMESTAMP)\"
 $(TWEAK_NAME)_FRAMEWORKS = UIKit Metal MetalKit Accelerate CoreMotion CoreLocation
 
 include $(THEOS)/makefiles/tweak.mk
